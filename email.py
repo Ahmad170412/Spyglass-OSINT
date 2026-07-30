@@ -4,7 +4,9 @@ import re
 import subprocess
 import concurrent.futures
 
-from .utils import _run, _domain, _verify, _pick, _breach_check, _check_tool, _HOLEHE, _US, _BB, _BB_DIR
+from .utils import _run, _domain, _verify, _pick, _check_tool, _HOLEHE, _US, _BB, _BB_DIR, _proxy_env, _proxy_args
+from . import utils
+from .breach import check as _breach_check
 
 
 # ─── tool runners ─────────────────────────────────────────
@@ -15,6 +17,7 @@ def _holehe(email):
     r = subprocess.run(
         [_HOLEHE, email, "--only-used"],
         capture_output=True, text=True, timeout=120,
+        env=_proxy_env(),
     )
     out = set()
     for line in r.stdout.split("\n"):
@@ -32,6 +35,7 @@ def _us_email(email):
     r = subprocess.run(
         [_US, "-e", email, "-v", "--only-found"],
         capture_output=True, text=True, timeout=120, input="n\n",
+        env=_proxy_env(),
     )
     out = {}
     for line in r.stdout.split("\n"):
@@ -45,9 +49,13 @@ def _us_email(email):
 def _blackbird_email(email):
     if not _check_tool("blackbird", _BB):
         return {}
+    bb_cmd = [sys.executable, _BB, "-e", email, "--no-update", "--no-nsfw"]
+    if utils._PROXY:
+        bb_cmd += _proxy_args()
     r = subprocess.run(
-        [sys.executable, _BB, "-e", email, "--no-update", "--no-nsfw"],
+        bb_cmd,
         capture_output=True, text=True, timeout=120, cwd=_BB_DIR,
+        env=_proxy_env(),
     )
     out = {}
     for i, line in enumerate(r.stdout.split("\n")):

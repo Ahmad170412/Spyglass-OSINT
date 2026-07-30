@@ -1,278 +1,84 @@
-#!/usr/bin/env python3
 import re
 import subprocess
 
-from .utils import _run, _extract_ips, _extract_emails, _extract_phones, _extract_whois_fields, _check_tool, _DIG, _NMAP, _GOBUSTER, _HTPPX, _WHOIS, _CURL, _SHODAN
+from .utils import (_run, _extract_emails, _extract_phones,
+                    _extract_whois_fields, _check_tool, _DIG, _NMAP, _GOBUSTER,
+                    _HTPPX, _WHOIS, _CURL, _SHODAN, _proxy_env, _proxy_args,
+                    _curl_json)
+from . import utils
 
-# ─── embedded wordlists ────────────────────────────────────
 _SUB_LIST = """
-www
-mail
-admin
-api
-blog
-dev
-test
-staging
-app
-beta
-cdn
-docs
-shop
-store
-support
-help
-portal
-status
-web
-m
-mobile
-news
-forum
-wiki
-demo
-vpn
-secure
-signup
-login
-register
-assets
-img
-css
-js
-static
-download
-files
-media
-video
-chat
-community
-boards
-calendar
-events
-maps
-api2
-api3
-backup
-db
-dns
-email
-ftp
-git
-graphql
-hr
-iam
-jenkins
-jobs
-kibana
-ldap
-localhost
-logs
-mail2
-metrics
-monitor
-mx
-mx1
-mx2
-ns1
-ns2
-pay
-payment
-phpmyadmin
-pop
-prod
-proxy
-radius
-redirect
-redis
-remote
-rest
-sandbox
-smtp
-sql
-ssh
-ssl
-stats
-status2
-svn
-sync
-syslog
-test2
-tunnel
-upload
-uploads
-vhost
-vm
-vpn2
-webmail
-websocket
-ws
-www2
-www3
-xmlrpc
-""".strip().splitlines()
+www mail admin api blog dev test staging app beta cdn docs shop store support
+help portal status web m mobile news forum wiki demo vpn secure signup login
+register assets img css js static download files media video chat community
+boards calendar events maps api2 api3 backup db dns email ftp git graphql hr
+iam jenkins jobs kibana ldap localhost logs mail2 metrics monitor mx mx1 mx2
+ns1 ns2 pay payment phpmyadmin pop prod proxy radius redirect redis remote
+rest sandbox smtp sql ssh ssl stats status2 svn sync syslog test2 tunnel
+upload uploads vhost vm vpn2 webmail websocket ws www2 www3 xmlrpc
+""".strip().split()
 
 _DIR_LIST = """
-admin
-administrator
-api
-app
-assets
-backup
-backups
-cache
-cdn
-cgi-bin
-cmd
-config
-configuration
-content
-css
-dashboard
-db
-demo
-dev
-docs
-download
-downloads
-error
-examples
-export
-favicon.ico
-files
-fonts
-forum
-graphql
-help
-home
-html
-images
-img
-include
-includes
-index
-install
-js
-json
-language
-lib
-library
-license
-login
-log
-logs
-mail
-media
-migrate
-mobile
-modules
-news
-old
-package
-pages
-panel
-phpinfo.php
-plugins
-private
-prod
-public
-README
-readme
-reports
-rest
-robots.txt
-rss
-sass
-save
-scripts
-search
-secure
-server-status
-service
-services
-session
-setup
-sitemap.xml
-sql
-src
-ssh
-stat
-static
-stats
-status
-storage
-styles
-svn
-swagger
-temp
-template
-templates
-test
-tmp
-todo
-tools
-tmp
-update
-upload
-uploads
-user
-users
-v2
-vendor
-version
-video
-views
-web
-webapp
-webroot
-wiki
-wpad.dat
-www
-xml
-xmlrpc
-""".strip().splitlines()
+admin administrator api app assets backup backups cache cdn cgi-bin cmd config
+configuration content css dashboard db demo dev docs download downloads error
+examples export favicon.ico files fonts forum graphql help home html images
+img include includes index install js json language lib library license login
+log logs mail media migrate mobile modules news old package pages panel
+phpinfo.php plugins private prod public README readme reports rest robots.txt
+rss sass save scripts search secure server-status service services session
+setup sitemap.xml sql src ssh stat static stats status storage styles svn
+swagger temp template templates test tmp todo tools tmp update upload uploads
+user users v2 vendor version video views web webapp webroot wiki wpad.dat www
+xml xmlrpc
+""".strip().split()
 
 
-# ─── website recon ────────────────────────────────────────
+def website(target, display=None):
+    out = _collect(target)
+    if display:
+        display(out)
+    return out
 
-def website(target):
-    print(f"\n[*] Website recon: {target}\n")
 
-    print("  [1/8] DNS records...")
-    if _check_tool("dig", _DIG):
-        for rtype in ["A", "AAAA", "MX", "NS", "TXT", "CNAME"]:
-            out = _run(["dig", target, rtype, "+short"])
-            if out:
-                vals = [l.strip() for l in out.split("\n") if l.strip()]
-                if vals:
-                    print(f"    {rtype}: {', '.join(vals)}")
+def _collect(target):
+    result = {}
 
-    print("  [2/8] Shodan...")
     ips = []
     for rtype in ["A", "AAAA"]:
-        out = _run(["dig", target, rtype, "+short"])
-        if out:
-            ips.extend(l.strip() for l in out.split("\n") if l.strip())
-    ips = [ip for ip in ips if "." in ip]
-    if not _check_tool("shodan", _SHODAN):
-        print("    Skipping (shodan not found)")
-    elif ips:
+        raw = _run(["dig", target, rtype, "+short"])
+        if raw:
+            ips.extend(l.strip() for l in raw.split("\n") if l.strip() and "." in l)
+    ips = list(set(ips))
+
+    # 1. DNS records
+    dns = {}
+    if _check_tool("dig", _DIG):
+        for rtype in ["A", "AAAA", "MX", "NS", "TXT", "CNAME"]:
+            raw = _run(["dig", target, rtype, "+short"])
+            if raw:
+                vals = [l.strip() for l in raw.split("\n") if l.strip()]
+                if vals:
+                    dns[rtype] = ", ".join(vals)
+    if dns:
+        result["dns_records"] = dns
+
+    # 2. Shodan
+    shodan_data = []
+    if ips and _check_tool("shodan", _SHODAN):
         for ip in ips:
             try:
                 r = subprocess.run(
                     ["shodan", "host", ip],
                     capture_output=True, text=True, timeout=20,
+                    env=_proxy_env(),
                 )
                 data = r.stdout.strip()
-                err  = r.stderr.strip()
+                err = r.stderr.strip()
             except Exception as e:
                 data, err = "", str(e)
 
             if data:
-                org = ""
-                ports = ""
-                isp = ""
-                country = ""
+                org = ports = isp = country = ""
                 for line in data.split("\n"):
                     low = line.lower()
                     if "organization" in low or low.startswith("org:"):
@@ -283,49 +89,49 @@ def website(target):
                         country = line.split(":", 1)[1].strip() if ":" in line else ""
                     elif "ports" in low:
                         ports = line.split(":", 1)[1].strip() if ":" in line else ""
-                parts = []
-                if org: parts.append(f"Org: {org}")
-                if isp: parts.append(f"ISP: {isp}")
-                if country: parts.append(f"Country: {country}")
-                if ports: parts.append(f"Ports: {ports}")
-                if parts:
-                    print(f"    {ip}: {' | '.join(parts)}")
-                else:
-                    print(f"    {ip}: No Shodan data")
+                parts = [p for p in [f"Org: {org}" if org else "",
+                                     f"ISP: {isp}" if isp else "",
+                                     f"Country: {country}" if country else "",
+                                     f"Ports: {ports}" if ports else ""] if p]
+                shodan_data.append(f"{ip}: {' | '.join(parts)}" if parts else f"{ip}: No Shodan data")
             elif "403" in err:
-                print(f"    {ip}: Free tier limit — no access for this IP")
+                shodan_data.append(f"{ip}: Free tier limit")
             elif "init" in err.lower():
-                print(f"    {ip}: Shodan not configured — run `shodan init <API_KEY>`")
+                shodan_data.append(f"{ip}: Shodan not configured")
             elif err:
-                print(f"    {ip}: {err.split(chr(10))[-1].strip()}")
+                shodan_data.append(f"{ip}: {err.split(chr(10))[-1].strip()}")
             else:
-                print(f"    {ip}: No Shodan data")
+                shodan_data.append(f"{ip}: No Shodan data")
+    elif ips:
+        shodan_data.append("Skipping (shodan not found)")
+    if shodan_data:
+        result["shodan"] = shodan_data
 
-    print("  [3/8] Port scan (nmap)...")
-    if _check_tool("nmap", _NMAP):
-        if ips:
-            for ip in ips:
-                nm = _run(
-                    ["nmap", "--top-ports", "100", "-sV", "-T4", "--open", ip, "-oG", "-"],
-                    timeout=120,
-                )
-                ports = re.findall(r"(\d+)/(open|filtered)/tcp//([^/]*?)//([^/]*?)", nm)
-                if ports:
-                    parts = []
-                    for p, st, sv, pr in ports:
-                        if pr:
-                            parts.append(f"{p}/{sv} ({pr})")
-                        elif sv:
-                            parts.append(f"{p}/{sv}")
-                        else:
-                            parts.append(p)
-                    print(f"    {ip}: {', '.join(parts)}")
-                else:
-                    print(f"    {ip}: No open ports found (or scan timed out)")
-        else:
-            print("    No IPs to scan")
+    # 3. Port scan
+    ports_data = []
+    if ips and _check_tool("nmap", _NMAP):
+        for ip in ips:
+            nm = _run(
+                ["nmap", "--top-ports", "100", "-sV", "-T4", "--open", ip, "-oG", "-"],
+                timeout=120,
+            )
+            ports = re.findall(r"(\d+)/(open|filtered)/tcp//([^/]*?)//([^/]*?)", nm)
+            if ports:
+                parts = []
+                for p, st, sv, pr in ports:
+                    if pr:
+                        parts.append(f"{p}/{sv} ({pr})")
+                    elif sv:
+                        parts.append(f"{p}/{sv}")
+                    else:
+                        parts.append(p)
+                ports_data.append(f"{ip}: {', '.join(parts)}")
+            else:
+                ports_data.append(f"{ip}: No open ports found")
+    if ports_data:
+        result["port_scan"] = ports_data
 
-    print("  [4/8] HTTP headers (curl -sI)...")
+    # 4. HTTP headers
     if _check_tool("curl", _CURL):
         hd = _run(["curl", "-sI", "-L", f"https://{target}"])
         server = ""
@@ -336,70 +142,81 @@ def website(target):
             elif low.startswith("x-powered-by:"):
                 server += (" | " + line.split(":", 1)[1].strip()) if server else line.split(":", 1)[1].strip()
         if server:
-            print(f"    Server: {server}")
+            result["http_headers"] = {"Server": server}
 
-    print("  [5/8] WHOIS lookup...")
+    # 5. WHOIS
+    whois_data = {}
     if _check_tool("whois", _WHOIS):
         wh = _run(["whois", target], timeout=30)
         fields = _extract_whois_fields(wh)
         whois_emails = _extract_emails(wh)
         whois_phones = _extract_phones(wh)
-
         for k, v in fields.items():
-            print(f"    {k}: {v}")
-        if not fields and not whois_emails and not whois_phones:
-            print("    No registrant info found")
-        else:
-            for e in whois_emails:
-                if e not in fields.values():
-                    print(f"    Email: {e}")
-            for p in whois_phones:
-                if p not in fields.values():
-                    print(f"    Phone: {p}")
+            whois_data[k] = v
+        extra_emails = [e for e in whois_emails if e not in whois_data.values()]
+        if extra_emails:
+            whois_data["Extra Emails"] = ", ".join(extra_emails)
+        extra_phones = [p for p in whois_phones if p not in whois_data.values()]
+        if extra_phones:
+            whois_data["Extra Phones"] = ", ".join(extra_phones)
+    if whois_data:
+        result["whois"] = whois_data
 
-    print("  [6/8] Subdomain enumeration (gobuster dns)...")
-    subs = []
+    # 6. Certificate Transparency (crt.sh) — passive subdomain enumeration
+    crt_subs = set()
+    raw = _curl_json(f"https://crt.sh/?q=%25.{target}&output=json&limit=100")
+    if raw and isinstance(raw, list):
+        for entry in raw:
+            vals = entry.get("name_value", "")
+            for name in vals.split("\n"):
+                name = name.strip().lower()
+                if name.endswith(f".{target.lower()}") or name == target.lower():
+                    crt_subs.add(name)
+    if crt_subs:
+        result["crt_sh_subdomains"] = sorted(crt_subs)
+
+    # 7. Subdomain enumeration (gobuster)
+    gb_subs = []
     if _check_tool("gobuster", _GOBUSTER):
         sd_out = _run(
-            ["gobuster", "dns", "-d", target, "-w", "-", "-q"],
+            ["gobuster", "dns", "-d", target, "-w", "-", "-q"] + (_proxy_args() if utils._PROXY else []),
             timeout=60, stdin="\n".join(_SUB_LIST),
         )
-        subs = re.findall(r"Found:\s*(\S+)", sd_out)
-        subs = sorted(set(subs))
-    if subs:
-        for s in subs:
-            print(f"    {s}")
-        print("  [7/8] HTTP probing (httpx)...")
+        gb_subs = sorted(set(re.findall(r"Found:\s*(\S+)", sd_out)))
+    if gb_subs:
+        result["subdomains"] = gb_subs
+
+    # 8. HTTP probing — probe all discovered subdomains
+    all_subs = sorted(set(gb_subs) | crt_subs)
+    if all_subs:
+        probe = []
         if _check_tool("httpx", _HTPPX):
             hx = _run(
                 ["httpx", "-silent", "-status-code", "-title",
                  "-server", "-content-length", "-timeout", "10"]
-                 + [f"https://{s}" for s in subs],
+                + [f"https://{s}" for s in all_subs],
                 timeout=60,
             )
-            for line in hx.split("\n"):
-                line = line.strip()
-                if line:
-                    print(f"    {line}")
-    else:
-        print("    No subdomains found")
+            probe = [l.strip() for l in hx.split("\n") if l.strip()]
+        if probe:
+            result["http_probe"] = probe
 
-    print("  [8/8] Directory enumeration (gobuster dir)...")
+    # 9. Directory enumeration
     dirs = []
     if _check_tool("gobuster", _GOBUSTER):
         gb_out = _run(
             ["gobuster", "dir", "-u", f"https://{target}",
-             "-w", "-", "-q", "-t", "20", "-k"],
+             "-w", "-", "-q", "-t", "20", "-k"] + (_proxy_args() if utils._PROXY else []),
             timeout=90, stdin="\n".join(_DIR_LIST),
         )
-        dirs = re.findall(r"/(\S+)\s+\(Status:\s*\d+\)", gb_out)
-        if not dirs:
+        found_dirs = re.findall(r"/(\S+)\s+\(Status:\s*\d+\)", gb_out)
+        if found_dirs:
+            dirs = sorted(set(found_dirs))
+        else:
             hint = re.findall(r"/(\S+)", gb_out)
             if hint:
-                for h in sorted(set(hint))[:10]:
-                    print(f"    {h}")
-            else:
-                print("    No directories found")
-        else:
-            for d in sorted(set(dirs)):
-                print(f"    /{d}")
+                dirs = sorted(set(hint))[:10]
+    if dirs:
+        result["directories"] = dirs
+
+    return result

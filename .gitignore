@@ -4,6 +4,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# Session / temp
+logs/
+
 # Python
 __pycache__/
 *.py[cod]

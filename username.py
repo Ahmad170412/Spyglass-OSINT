@@ -4,7 +4,9 @@ import re
 import subprocess
 import concurrent.futures
 
-from .utils import _run, _domain, _verify, _pick, _breach_check, _check_tool, _US, _SH, _MG, _BB, _BB_DIR
+from .utils import _run, _domain, _verify, _pick, _check_tool, _US, _SH, _MG, _BB, _BB_DIR, _proxy_env, _proxy_args
+from . import utils
+from .breach import check as _breach_check
 
 
 # ─── tool runners ─────────────────────────────────────────
@@ -15,6 +17,7 @@ def _us_username(username):
     r = subprocess.run(
         [_US, "-u", username, "-v", "--only-found"],
         capture_output=True, text=True, timeout=120, input="n\n",
+        env=_proxy_env(),
     )
     out = {}
     for line in r.stdout.split("\n"):
@@ -31,6 +34,7 @@ def _sherlock(username):
     r = subprocess.run(
         [_SH, username, "--print-found"],
         capture_output=True, text=True, timeout=120,
+        env=_proxy_env(),
     )
     out = {}
     for line in r.stdout.split("\n"):
@@ -47,6 +51,7 @@ def _maigret(username):
     r = subprocess.run(
         [_MG, username, "--no-progressbar", "-C", "--top-sites", "50"],
         capture_output=True, text=True, timeout=300,
+        env=_proxy_env(),
     )
     out = {}
     for line in r.stdout.split("\n"):
@@ -64,9 +69,13 @@ def _maigret(username):
 def _blackbird_username(username):
     if not _check_tool("blackbird", _BB):
         return {}
+    bb_cmd = [sys.executable, _BB, "-u", username, "--no-update", "--no-nsfw"]
+    if utils._PROXY:
+        bb_cmd += _proxy_args()
     r = subprocess.run(
-        [sys.executable, _BB, "-u", username, "--no-update", "--no-nsfw"],
+        bb_cmd,
         capture_output=True, text=True, timeout=300, cwd=_BB_DIR,
+        env=_proxy_env(),
     )
     out = {}
     for i, line in enumerate(r.stdout.split("\n")):

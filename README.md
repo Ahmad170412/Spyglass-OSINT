@@ -1,129 +1,166 @@
-# Spyglass
+# 🔭 Spyglass
 
-> **Multi-tool reconnaissance — email, username, phone & website intelligence from your terminal.**
+> **The OSINT unified CLI — email, username, phone, website, IP, metadata, and OPSEC, all in one place.**
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue?logo=python)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
----
+Hey there. OSINT usually means juggling 15 different tools across 5 terminals, each with its own output format, its own flags, its own way of doing things. Spyglass fixes that.
 
-## Overview
+It wraps **holehe, user-scanner, sherlock, maigret, blackbird, PhoneInfoga, Ignorant, Shodan, nmap, dig, whois, curl, gobuster, httpx, exiftool, LeakCheck, Scylla, and ip-api.com** into a **single, unified CLI** — one interface, one output format, one place to run everything.
 
-Spyglass is a modular OSINT swiss-army knife that orchestrates **15+ external tools** in parallel, cross-references their results, and surfaces only what matters. Every query type runs multiple engines simultaneously and highlights **tool agreement** so you know which findings are reliable.
-
-### What it can do
-
-| Command | Engines | Output |
-|---|---|---|
-| `email` | holehe + user-scanner + blackbird + leakcheck.io | Sites registered + breach data, grouped by tool consensus |
-| `username` | user-scanner + sherlock + maigret + blackbird + leakcheck.io | Social profiles across 400+ platforms, with 4-way agreement scoring |
-| `phone` | phonenumbers lib + PhoneInfoga + Ignorant + leakcheck.io | Validation, carrier, location, web footprint, platform registrations |
-| `website` | dig + Shodan + nmap + curl + whois + gobuster + httpx | DNS, open ports, HTTP headers, WHOIS, subdomains, directory busting |
-
-### Why this exists
-
-Running 4–5 OSINT tools manually and comparing their output is tedious. This wrapper **runs them concurrently**, **deduplicates results**, **verifies live URLs**, and **ranks findings by cross-tool agreement**. You get one answer instead of five spreadsheets.
+No more context switching. No more copy-pasting between tools. Just pick a target and go.
 
 ---
 
-## Installation
-
-### 1. Clone
+## 🔭 Quick start
 
 ```bash
 git clone https://github.com/yourusername/spyglass.git
 cd spyglass
-```
-
-### 2. Python dependencies
-
-```bash
 pip install -r requirements.txt
+python -m Spyglass-OSINT
 ```
 
-### 3. External tools
-
-The toolkit shells out to several industry-standard tools. Install what you need:
-
-| Tool | Purpose | Install |
-|---|---|---|
-| [holehe](https://github.com/megadose/holehe) | Email registration check | `pip install holehe` |
-| [user-scanner](https://github.com/megadose/user-scanner) | Email/username lookup | `pip install user-scanner` |
-| [sherlock](https://github.com/sherlock-project/sherlock) | Username search | `pip install sherlock` |
-| [maigret](https://github.com/soxoj/maigret) | Username search | `pip install maigret` |
-| [blackbird](https://github.com/p1ngul1n0/blackbird) | Username/email search | `git clone https://github.com/p1ngul1n0/blackbird` |
-| [PhoneInfoga](https://github.com/sundowndev/phoneinfoga) | Phone number recon | `brew install phoneinfoga` / [releases](https://github.com/sundowndev/phoneinfoga/releases) |
-| [ignorant](https://github.com/megadose/ignorant) | Phone platform check | `pip install ignorant` |
-| [Shodan](https://shodan.io) | IP intelligence | `pip install shodan` + `shodan init YOUR_API_KEY` |
-| [nmap](https://nmap.org) | Port scanning | `brew install nmap` / `apt install nmap` |
-| [gobuster](https://github.com/OJ/gobuster) | Subdomain & dir busting | `brew install gobuster` / `apt install gobuster` |
-| [httpx](https://github.com/projectdiscovery/httpx) | HTTP probing | `brew install httpx` / [releases](https://github.com/projectdiscovery/httpx/releases) |
-| dig / curl / whois | System utilities | Pre-installed on macOS/Linux |
-
-> **Tip:** Run the tool — if something's missing, it'll tell you exactly what and how to install it.
+That's it. Pick a module from the menu and go. If something's missing, the tool tells you what to install.
 
 ---
 
-## Usage
+## 🔭 What it can do
+
+| Module | What it checks | Engines |
+|---|---|---|
+| `email` | Where is this email registered? Any breaches? | holehe + user-scanner + blackbird + LeakCheck + Scylla |
+| `username` | Which platforms have this profile? | user-scanner + sherlock + maigret + blackbird |
+| `phone` | Who owns this number? Carrier? Region? Any footprints? | phonenumbers + PhoneInfoga + Ignorant |
+| `website` | Full recon: DNS, ports, headers, WHOIS, subdomains, directories | dig + Shodan + nmap + curl + whois + gobuster + httpx + crt.sh |
+| `ip` | Where is this IP? Reverse DNS? Open ports? | ip-api.com + dig + whois + Shodan + nmap |
+| `metadata` | What's hidden in this file? GPS, camera, document author? | exiftool + Pillow + PyPDF2 + python-docx/openpyxl |
+| `opsec` | Am I leaking my real IP? Is my proxy working? | dig + curl + ip-api.com + torsocks |
+| `investigation` | Everything above, cross-correlated | Runs all modules, connects the dots |
+
+### Why you'd use this
+
+Spyglass isn't another OSINT tool — it's a **unified command center** for the ones that already exist.
+
+- **One interface** — Every tool speaks the same language. Same flags (`--json`, `--csv`, `--proxy`), same output format, same menu.
+- **Parallel execution** — Running holehe + user-scanner + blackbird + LeakCheck + Scylla for one email? That happens simultaneously, not sequentially.
+- **Smart merging** — Results are deduplicated and ranked by cross-tool agreement. If all 4 username tools found the same profile, that goes to the top.
+- **Cross-correlation** — In investigation mode, Spyglass connects email domains to WHOIS orgs, phone regions to countries, username platforms to email platforms. It finds links you'd miss manually.
+- **Privacy-aware** — Built-in proxy/Tor support with OPSEC verification. Check if you're actually anonymous before you start.
+
+---
+
+## 🔭 Usage
+
+### Interactive menu
 
 ```bash
-python -m osint
+python -m Spyglass-OSINT
 ```
 
-Then type a query at the `>` prompt:
+```
+  [1]  Identity              (email, username, phone)
+  [2]  Infrastructure        (website, IP)
+  [3]  Full investigation    (correlate everything)
+  [4]  Utilities             (OPSEC, metadata, help, clear)
+  [5]  Exit
+
+Select [1-5]:
+```
+
+Each sub-menu has a **Back** option to return here.
+
+### One-shot commands
+
+```bash
+python -m Spyglass-OSINT email user@example.com
+python -m Spyglass-OSINT ip 1.1.1.1 --json --proxy socks5://127.0.0.1:9050
+python -m Spyglass-OSINT username johndoe --csv
+```
+
+Works with: `email`, `username`, `phone`, `website`, `ip`, `metadata`, `opsec`.
+
+### Proxy / Tor
+
+Add `--proxy socks5://127.0.0.1:9050` to any command (or set env var `ALL_PROXY`).  
+Spyglass routes dig, nmap, and whois through `torsocks` automatically.  
+The OPSEC module can verify your proxy is actually hiding you.
+
+### Full investigation
+
+Enter everything you know about a target:
 
 ```
-> email person@example.com
-> username johndoe
-> phone +15551234567
-> website example.com
+> email: user@example.com, username: jdoe, phone: +6585260980
 ```
 
-### Example output
+Or positional:
 
 ```
-> username johndoe
+> user@example.com, jdoe, +6585260980, example.com
+```
 
-[*] Checking username: johndoe (5 tools in parallel)
+Spyglass runs every applicable module, extracts entities, and highlights cross-module connections.
 
-  All 4 tools agree (4):
-    github.com: https://github.com/johndoe
-    twitter.com: https://twitter.com/johndoe
-    reddit.com: https://reddit.com/user/johndoe
-    keybase.io: https://keybase.io/johndoe
+### Export
 
-  user-scanner + sherlock agree (others missed) (2):
-    dev.to: https://dev.to/johndoe
-    medium.com: https://medium.com/@johndoe
+```bash
+python -m Spyglass-OSINT email user@example.com --json
+python -m Spyglass-OSINT ip 1.1.1.1 --csv
+```
 
-  Only maigret found (3):
-    hackernews: https://news.ycombinator.com/user?id=johndoe
-    …
+Saves a timestamped file in the current directory.
 
-  Breach data: 3 databases (Collection #1 (2019), LinkedIn (2021), HaveIBeenPwned (2022))
-  Exposed fields: email, password_hash, username, ip_address
+---
+
+## 🔭 Project structure
+
+```
+Spyglass-OSINT/
+├── __main__.py          CLI entry — state machine, arg parser, menu dispatch
+├── display.py           Rich TUI — banner, prompts, show_* functions
+├── utils.py             Proxy system, tool paths, subprocess runner, extraction helpers
+├── email.py             Email recon
+├── username.py          Username recon
+├── phone.py             Phone recon
+├── website.py           Website recon
+├── ip.py                IP recon
+├── metadata.py          Metadata extraction
+├── breach.py            Breach checking — LeakCheck + Scylla
+├── opsec.py             OPSEC health check
+├── investigation.py     Full investigation orchestration + correlation
+├── export.py            JSON / CSV export
+├── requirements.txt     Python dependencies
+├── README.md            This file
+├── LICENSE              MIT license
+└── .gitignore           Git ignore rules
 ```
 
 ---
 
-## Project structure
+## 🔭 Requirements
 
-```
-spyglass/
-├── __init__.py          # Package marker
-├── __main__.py          # CLI entry point
-├── email.py             # Email recon engine
-├── username.py          # Username recon engine
-├── phone.py             # Phone number recon engine
-├── website.py           # Website recon engine
-├── utils.py             # Shared helpers, tool paths, breach checker
-├── requirements.txt     # Python dependencies
-├── LICENSE              # MIT license
-└── .gitignore           # Git ignore rules
-```
+Python 3.9+ and `pip install -r requirements.txt`. External tools are auto-detected — install whatever modules you need. The tool tells you what's missing.
 
 ---
 
-## License
+## 🔭 Legal disclaimer
+
+This tool is for **authorized security research and educational purposes only**.  
+You are responsible for complying with all applicable laws in your jurisdiction.  
+Do not use this tool against targets without explicit permission.
+
+---
+
+## 🔭 Found this useful?
+
+If Spyglass saved you time or helped you learn something, consider **starring the repo** — it lets me know people find this useful and helps others discover it.
+
+Contributions, ideas, and bug reports are welcome.
+
+---
+
+## 🔭 License
 
 MIT — use it, learn from it, build on it.

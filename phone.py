@@ -4,7 +4,8 @@ import concurrent.futures
 
 import phonenumbers
 from phonenumbers import carrier, geocoder, timezone as pn_tz
-from .utils import _run, _breach_check, show_breach, _check_tool, _PHONEINFOGA, _IGNORANT
+from .utils import _run, _check_tool, _PHONEINFOGA, _IGNORANT
+from .breach import check as _breach_check
 
 
 _PHONE_TYPE = {
@@ -123,39 +124,4 @@ def phone(target):
     }
 
 
-# ─── CLI display ──────────────────────────────────────────
 
-def show_phone(r):
-    pi = r["phonenumbers"]
-    pf = r["phoneinfoga"]
-    ig = r["ignorant"]
-
-    if "error" in pi:
-        print(f"    {pi['error']}")
-        return
-
-    print("  [1/3] Number info...")
-    print(f"    {pi['e164']} — {pi['type']} — {pi['region']} ({pi['location']})")
-    print(f"    Carrier: {pi['carrier']}  |  Timezone: {pi['timezone']}")
-
-    sections = pf.get("sections", {})
-    if sections:
-        print("\n  [2/3] Web search (PhoneInfoga)...")
-        for section, urls in sections.items():
-            label = section.replace("_", " ").title()
-            domains = []
-            for u in urls[:5]:
-                m = re.search(r"site%3A([^+&]+)", u)
-                if m:
-                    domains.append(m.group(1))
-            if domains:
-                print(f"    {label}: {', '.join(domains)}")
-
-    if ig:
-        print("\n  [3/3] Platform check (Ignorant)...")
-        for site in ig:
-            print(f"    {site}: registered ✓")
-    else:
-        print("\n  [3/3] Platform check (Ignorant)...")
-        print("    No known registrations found")
-    show_breach(r.get("breach", {}))

@@ -1,15 +1,49 @@
 #!/usr/bin/env python3
 import os
-import sys
-import subprocess
 import re
 import json
+import subprocess
 import concurrent.futures
-from urllib.parse import urlparse, quote
+from urllib.parse import urlparse
 import shutil
 
-# ─── tool paths (None if not found) ────────────────────────
 
+# ─── proxy ─────────────────────────────────────────────────
+
+_PROXY = None
+
+
+def set_proxy(url):
+    global _PROXY
+    _PROXY = url
+
+
+def _proxy_env():
+    if not _PROXY:
+        return None
+    env = os.environ.copy()
+    env["ALL_PROXY"] = _PROXY
+    env["HTTP_PROXY"] = _PROXY
+    env["HTTPS_PROXY"] = _PROXY
+    return env
+
+
+def _proxy_args():
+    return ["--proxy", _PROXY] if _PROXY else []
+
+
+def _proxy_prefix(cmd):
+    if not _PROXY or not cmd:
+        return cmd
+    base = os.path.basename(cmd[0])
+    if base in {"dig", "nmap", "whois"} and _TORSOCKS:
+        return [_TORSOCKS] + cmd
+    return cmd
+
+
+# ─── tool paths ───────────────────────────────────────────
+
+_TORSOCKS = shutil.which("torsocks")
 _HOLEHE  = shutil.which("holehe")
 _US      = shutil.which("user-scanner")
 _SH      = shutil.which("sherlock")
@@ -36,21 +70,66 @@ _HTPPX = shutil.which("httpx")
 _WHOIS = shutil.which("whois")
 _CURL = shutil.which("curl")
 _SHODAN = shutil.which("shodan")
+_EXIFTOOL = shutil.which("exiftool")
+
+
+# ─── network helpers ──────────────────────────────────────
+
+def _curl_json(url, timeout=15):
+    if not _CURL:
+        return None
+    cmd = [_CURL, "-s", url]
+    if _PROXY:
+        cmd = cmd[:1] + _proxy_args() + cmd[1:]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if r.returncode == 0 and r.stdout.strip():
+            return json.loads(r.stdout.strip())
+    except Exception:
+        pass
+    return None
 
 
 def _check_tool(name, path):
     if not path:
-        print(f"  [!] {name} not found. Install it and ensure it's in your PATH.")
+        from . import display as _ui
+        _ui.err(f"{name} not found. Install it and ensure it's in your PATH.")
         return False
     return True
 
 
-# ─── helpers ──────────────────────────────────────────────
+# ─── text / URL helpers ───────────────────────────────────
 
 def _domain(url):
     p = urlparse(url)
     d = (p.netloc or p.path).lower()
     return d[4:] if d.startswith("www.") else d
+
+
+def _pick(*dicts):
+    def _fn(d):
+        for dd in dicts:
+            if d in dd:
+                return dd[d]
+        return d
+    return _fn
+
+
+def _run(cmd, timeout=15, stdin="", proxy=True):
+    kwargs = dict(capture_output=True, text=True, timeout=timeout, input=stdin)
+    cmd = list(cmd)
+    if proxy and _PROXY:
+        base = os.path.basename(cmd[0]) if cmd else ""
+        if base == "curl":
+            cmd = cmd[:1] + _proxy_args() + cmd[1:]
+        else:
+            cmd = _proxy_prefix(cmd)
+            kwargs["env"] = _proxy_env()
+    try:
+        r = subprocess.run(cmd, **kwargs)
+        return r.stdout.strip() or r.stderr.strip()
+    except Exception as e:
+        return str(e)
 
 
 def _verify(urls, max_workers=30, timeout=10, silent=False):
@@ -61,10 +140,10 @@ def _verify(urls, max_workers=30, timeout=10, silent=False):
 
     def _check(u):
         try:
-            r = subprocess.run(
-                ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", u],
-                capture_output=True, text=True, timeout=timeout,
-            )
+            cmd = ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", u]
+            if _PROXY:
+                cmd = cmd[:1] + _proxy_args() + cmd[1:]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
             return r.stdout.strip() == "200"
         except Exception:
             return False
@@ -75,29 +154,12 @@ def _verify(urls, max_workers=30, timeout=10, silent=False):
         for f in concurrent.futures.as_completed(fm):
             if f.result():
                 valid.add(fm[f])
-
     if not silent:
         print(f"({len(valid)} alive)")
     return valid
 
 
-def _pick(*dicts):
-    """Return first matching URL for a domain across multiple dicts."""
-    def _fn(d):
-        for dd in dicts:
-            if d in dd:
-                return dd[d]
-        return d
-    return _fn
-
-
-def _run(cmd, timeout=15, stdin=""):
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, input=stdin)
-        return r.stdout.strip() or r.stderr.strip()
-    except Exception as e:
-        return str(e)
-
+# ─── extraction helpers ───────────────────────────────────
 
 def _extract_ips(text):
     return sorted(set(re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text)))
@@ -142,36 +204,3 @@ def _extract_whois_fields(text):
             if m:
                 out[k] = m.group(1).strip()
     return out
-
-
-# ─── breach check ─────────────────────────────────────────
-
-def _breach_check(query, qtype="email"):
-    if not _CURL:
-        return {"found": 0, "sources": [], "fields": []}
-    try:
-        import json
-        from urllib.parse import quote
-        url = f"https://leakcheck.io/api/public?check={quote(query)}"
-        r = subprocess.run(
-            [_CURL, "-s", url],
-            capture_output=True, text=True, timeout=15,
-        )
-        data = json.loads(r.stdout.strip())
-        if data.get("success"):
-            return {
-                "found": data.get("found", 0),
-                "sources": data.get("sources", []),
-                "fields": data.get("fields", []),
-            }
-        return {"found": 0, "sources": [], "fields": []}
-    except Exception:
-        return {"found": 0, "sources": [], "fields": []}
-
-
-def show_breach(br):
-    if br.get("found"):
-        top = [f"{s['name']} ({s['date']})" for s in br["sources"][:5]]
-        print(f"\n  Breach data: {br['found']} databases ({', '.join(top)})")
-        if br.get("fields"):
-            print(f"  Exposed fields: {', '.join(br['fields'][:8])}")

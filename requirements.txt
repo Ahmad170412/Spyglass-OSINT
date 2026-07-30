@@ -5,3 +5,4 @@ sherlock
 maigret
 shodan
 ignorant>=2.0
+rich>=13.0.0
