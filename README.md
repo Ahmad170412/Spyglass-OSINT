@@ -7,6 +7,7 @@
 [![OSINT](https://img.shields.io/badge/OSINT-recon-purple)](https://github.com/Ahmad170412/Spyglass-OSINT)
 [![Tools](https://img.shields.io/badge/tools-15%2B-orange)](https://github.com/Ahmad170412/Spyglass-OSINT)
 [![Modules](https://img.shields.io/badge/modules-8-success)](https://github.com/Ahmad170412/Spyglass-OSINT)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](https://github.com/Ahmad170412/Spyglass-OSINT)
 
 Hey there. OSINT usually means juggling 15 different tools across 5 terminals, each with its own output format, its own flags, its own way of doing things. Spyglass fixes that.
 
