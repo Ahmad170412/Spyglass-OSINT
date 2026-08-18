@@ -59,7 +59,7 @@ def banner():
         _con.print(_BANNER, style="bold #00ff00")
         _con.print(f"    Your Local IP: {_local_ip()}\n", style="#00ff00")
     else:
-        os.system("cls" if os.name == "nt" else "clear")
+        os.system("clear")
         print(_BANNER)
         print(f"    Your Local IP: {_local_ip()}\n")
 
@@ -69,7 +69,7 @@ def banner():
 _GREEN = "#00ff00"
 
 _MAIN_ITEMS = [
-    "[1]  Identity              (email, username, phone)",
+    "[1]  Identity              (email, username, phone, dark web)",
     "[2]  Infrastructure        (website, IP)",
     "[3]  Full investigation    (correlate everything)",
     "[4]  Utilities             (OPSEC, metadata, help, clear)",
@@ -81,7 +81,8 @@ _SUB_MENUS = {
         "[1]  Email investigation",
         "[2]  Username search",
         "[3]  Phone investigation",
-        "[4]  Back",
+        "[4]  Dark web search",
+        "[5]  Back",
     ],
     "infra": [
         "[1]  Website recon",
@@ -99,7 +100,7 @@ _SUB_MENUS = {
 
 _SUB_LABELS = {
     "main":     "Select [1-5]",
-    "identity": "Select [1-4]",
+    "identity": "Select [1-5]",
     "infra":    "Select [1-3]",
     "utils":    "Select [1-5]",
 }
@@ -146,6 +147,7 @@ def target_prompt(qtype):
         "website":  "Enter domain or URL",
         "metadata": "Enter file path",
         "ip":       "Enter IP address or domain",
+        "darkweb":  "Enter email, username, phone, domain, or IP",
     }
     label = labels.get(qtype, "Enter target")
     if _RICH:
@@ -421,6 +423,60 @@ def show_ip(r):
             item(str(p))
 
 
+def show_darkweb(r):
+    if r.get("error"):
+        err(r["error"])
+        return
+
+    ahmia = r.get("ahmia", [])
+    section(f"Ahmia .onion index ({len(ahmia)} results)")
+    if ahmia:
+        for res in ahmia:
+            title = res.get("title") or res.get("domain") or res.get("url", "")
+            item(title)
+            if res.get("url"):
+                item_dim(f"    {res['url']}")
+            if res.get("description"):
+                item_dim(f"    {res['description'][:160]}")
+            meta = res.get("domain", "")
+            if res.get("last_seen"):
+                meta = f"{meta}  |  last seen {res['last_seen']}".strip(" |")
+            if meta:
+                item_dim(f"    {meta}")
+    else:
+        item_dim("No .onion index results")
+
+    if r.get("breach") is not None:
+        breach(r["breach"])
+
+    intelx = r.get("intelx")
+    if intelx:
+        total = intelx.get("total", len(intelx.get("results", [])))
+        section(f"IntelX ({total} total)")
+        for v in intelx.get("results", []):
+            item(str(v))
+
+    hibp = r.get("hibp")
+    if hibp:
+        found = hibp.get("breaches", [])
+        section(f"HaveIBeenPwned ({len(found)} breaches)")
+        if found:
+            for x in found:
+                item(f"{x.get('name', 'unknown')} ({x.get('date', 'n/a')})")
+        else:
+            item_dim("No known breaches")
+
+
+def show_pwned(r):
+    if r.get("error"):
+        warn(f"    Could not check: {r['error']}")
+        return
+    if r.get("pwned"):
+        warn(f"    This password has appeared in {r.get('count', '?')} known breaches.")
+    else:
+        good("    This password was not found in known breach collections.")
+
+
 def show_opsec(r):
     _print("\n  OPSEC Health Check", _GREEN, bold=True)
     section("Connection")
@@ -594,7 +650,10 @@ def show_investigation(r):
 
 def _print(text, color=None, bold=False, dim=False):
     if _RICH:
-        _con.print(text, style=_style(fg=color, bold=bold, dim=dim))
+        # markup=False: Spyglass output is plain text, so "[word]" must not be
+        # interpreted as a Rich style tag (e.g. cases output, --usage text).
+        # Colors still come through the style= argument.
+        _con.print(text, style=_style(fg=color, bold=bold, dim=dim), markup=False)
     else:
         print(text)
 

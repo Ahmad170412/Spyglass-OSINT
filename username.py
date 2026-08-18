@@ -14,11 +14,14 @@ from .breach import check as _breach_check
 def _us_username(username):
     if not _check_tool("user-scanner", _US):
         return {}
-    r = subprocess.run(
-        [_US, "-u", username, "-v", "--only-found"],
-        capture_output=True, text=True, timeout=120, input="n\n",
-        env=_proxy_env(),
-    )
+    try:
+        r = subprocess.run(
+            [_US, "-u", username, "-v", "--only-found"],
+            capture_output=True, text=True, timeout=120, input="n\n",
+            env=_proxy_env(),
+        )
+    except Exception:
+        return {}
     out = {}
     for line in r.stdout.split("\n"):
         m = re.search(r"\[(https?://[^\]]+)\]", line)
@@ -31,11 +34,14 @@ def _us_username(username):
 def _sherlock(username):
     if not _check_tool("sherlock", _SH):
         return {}
-    r = subprocess.run(
-        [_SH, username, "--print-found"],
-        capture_output=True, text=True, timeout=120,
-        env=_proxy_env(),
-    )
+    try:
+        r = subprocess.run(
+            [_SH, username, "--print-found"],
+            capture_output=True, text=True, timeout=300,
+            env=_proxy_env(),
+        )
+    except Exception:
+        return {}
     out = {}
     for line in r.stdout.split("\n"):
         m = re.search(r"(https?://\S+)", line)
@@ -48,11 +54,14 @@ def _sherlock(username):
 def _maigret(username):
     if not _check_tool("maigret", _MG):
         return {}
-    r = subprocess.run(
-        [_MG, username, "--no-progressbar", "-C", "--top-sites", "50"],
-        capture_output=True, text=True, timeout=300,
-        env=_proxy_env(),
-    )
+    try:
+        r = subprocess.run(
+            [_MG, username, "--no-progressbar", "-C", "--top-sites", "50"],
+            capture_output=True, text=True, timeout=300,
+            env=_proxy_env(),
+        )
+    except Exception:
+        return {}
     out = {}
     for line in r.stdout.split("\n"):
         if not line.startswith("[+] "):
@@ -72,11 +81,14 @@ def _blackbird_username(username):
     bb_cmd = [sys.executable, _BB, "-u", username, "--no-update", "--no-nsfw"]
     if utils._PROXY:
         bb_cmd += _proxy_args()
-    r = subprocess.run(
-        bb_cmd,
-        capture_output=True, text=True, timeout=300, cwd=_BB_DIR,
-        env=_proxy_env(),
-    )
+    try:
+        r = subprocess.run(
+            bb_cmd,
+            capture_output=True, text=True, timeout=300, cwd=_BB_DIR,
+            env=_proxy_env(),
+        )
+    except Exception:
+        return {}
     out = {}
     for i, line in enumerate(r.stdout.split("\n")):
         m = re.search(r"✔️\s+\[([^\]]+)\]\s*(https?://\S+)?", line)

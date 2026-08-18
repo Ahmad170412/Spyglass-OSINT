@@ -1,7 +1,7 @@
 phonenumbers>=8.13.0
 holehe
 user-scanner
-sherlock
+sherlock-project
 maigret
 shodan
 ignorant>=2.0

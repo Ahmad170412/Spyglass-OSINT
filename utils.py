@@ -48,15 +48,18 @@ _HOLEHE  = shutil.which("holehe")
 _US      = shutil.which("user-scanner")
 _SH      = shutil.which("sherlock")
 _MG      = shutil.which("maigret")
-_BB      = shutil.which("blackbird")
+_BB      = shutil.which("blackbird") or shutil.which("blackbird.py")
 _BB_DIR  = os.path.dirname(_BB) if _BB else None
 _PHONEINFOGA = shutil.which("phoneinfoga")
 _IGNORANT = shutil.which("ignorant")
 
 if not _BB:
     for _p in [
-        "/opt/blackbird/blackbird.py",
-        os.path.expanduser("~/.local/bin/blackbird/blackbird.py"),
+        "/opt/blackbird/blackbird.py",                        # Linux (git clone)
+        os.path.expanduser("~/.local/bin/blackbird/blackbird.py"),  # Linux (pipx-style)
+        "/opt/homebrew/bin/blackbird.py",                     # macOS (Apple Silicon)
+        "/usr/local/bin/blackbird.py",                        # macOS (Intel)
+        os.path.expanduser("~/blackbird/blackbird.py"),       # macOS/Linux (git clone)
     ]:
         if os.path.isfile(_p):
             _BB = _p
@@ -100,9 +103,17 @@ def _check_tool(name, path):
 
 # ─── text / URL helpers ───────────────────────────────────
 
+def safe_name(value) -> str:
+    """Make an arbitrary target string safe for use in a filename."""
+    s = re.sub(r"[^A-Za-z0-9._+-]+", "_", str(value)).strip("_.")
+    return s or "target"
+
+
 def _domain(url):
     p = urlparse(url)
     d = (p.netloc or p.path).lower()
+    if ":" in d:
+        d = d.split(":")[0]  # strip the port, keep the hostname
     return d[4:] if d.startswith("www.") else d
 
 
@@ -140,7 +151,7 @@ def _verify(urls, max_workers=30, timeout=10, silent=False):
 
     def _check(u):
         try:
-            cmd = ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", u]
+            cmd = ["curl", "-s", "-o", os.devnull, "-w", "%{http_code}", u]
             if _PROXY:
                 cmd = cmd[:1] + _proxy_args() + cmd[1:]
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -170,7 +181,9 @@ def _extract_emails(text):
 
 
 def _extract_phones(text):
-    pats = re.findall(r"\+?\d[\d\s().-]{7,20}", text)
+    # The lookahead rejects digit runs glued to letters/underscores — e.g. a
+    # registry domain ID like "1264983250_DOMAIN_COM-VRSN" is not a phone.
+    pats = re.findall(r"\+?\d[\d\s().-]{7,20}(?![\w])", text)
     out = set()
     for p in pats:
         s = p.strip()
@@ -192,15 +205,50 @@ def _extract_phones(text):
 
 
 def _extract_whois_fields(text):
-    keys = ["Name", "Organization", "Address", "City", "State", "PostalCode",
-            "Country", "Phone", "Fax", "Email", "Tech Email", "Admin Email",
-            "Registrant Name", "Registrant Organization", "Registrant Email",
-            "Admin Name", "Admin Organization", "Admin Email",
-            "Tech Name", "Tech Organization", "Tech Email"]
+    """Extract fields from registry (ARIN/RIPE) and domain (IANA/VeriSign) whois.
+
+    Domain registries spell keys differently (``Domain Name``, ``Registrar``,
+    ``Creation Date``, ``Name Server``, ``created``, ``organisation``, ...) than
+    ARIN/RIPE do. Everything is matched case-insensitively and normalized to a
+    canonical display name; repeatable keys (Name Server, Domain Status) are
+    joined with commas.
+    """
+    keys = [
+        # registry / IP-whois (ARIN/RIPE)
+        "Name", "Organization", "Organisation", "Address", "City", "State",
+        "PostalCode", "Country", "Phone", "Fax", "Email", "E-Mail", "Fax No",
+        "Tech Email", "Admin Email",
+        "Registrant Name", "Registrant Organization", "Registrant Email",
+        "Admin Name", "Admin Organization", "Admin Email",
+        "Tech Name", "Tech Organization", "Tech Email",
+        # domain-whois (IANA thin + VeriSign/PIR full)
+        "Domain", "Domain Name", "Registry Domain ID", "Registrar",
+        "Registrar IANA ID", "Registrar URL", "Registrar WHOIS Server",
+        "Sponsoring Registrar", "Whois Server", "Creation Date", "Updated Date",
+        "Registry Expiry Date", "Expiry Date", "Domain Status", "Status",
+        "Name Server", "DNSSEC", "Created", "Updated", "Source", "Refer",
+    ]
+    canon = {
+        "Domain Name": "Domain",
+        "Organisation": "Organization",
+        "E-Mail": "Email",
+        "Fax No": "Fax",
+        "Created": "Creation Date",
+        "Updated": "Updated Date",
+        "Expiry Date": "Registry Expiry Date",
+    }
+    repeat = {"Name Server", "Domain Status"}
     out = {}
     for line in text.split("\n"):
         for k in keys:
             m = re.match(rf"^\s*{re.escape(k)}\s*:\s*(.+)", line, re.IGNORECASE)
-            if m:
-                out[k] = m.group(1).strip()
+            if not m:
+                continue
+            val = m.group(1).strip()
+            key = canon.get(k, k)
+            if key in repeat and key in out:
+                out[key] = f"{out[key]}, {val}"
+            else:
+                out[key] = val
+            break
     return out

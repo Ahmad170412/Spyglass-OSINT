@@ -80,19 +80,24 @@ def _phoneinfoga(number):
 def _ignorant(number):
     if not _check_tool("ignorant", _IGNORANT):
         return []
+    # Derive the country code and local number from phonenumbers instead of
+    # guessing from the leading digits: the old loop kept overwriting `cc`,
+    # so +65 8526 0980 became country code "658" with local "585260980".
     cc = ""
-    digits = re.sub(r"\D", "", number)
-    if number.startswith("+"):
-        for i in range(1, 4):
-            part = digits[:i]
-            if part:
-                cc = part
-    if not cc:
-        cc = digits[0] if digits else ""
-    nums = digits[1:] if number.startswith("+") else digits
-    if not nums:
+    local = ""
+    try:
+        parsed = phonenumbers.parse(number, None)
+        if phonenumbers.is_possible_number(parsed):
+            cc = str(parsed.country_code)
+            local = str(parsed.national_number)
+    except phonenumbers.NumberParseException:
+        digits = re.sub(r"\D", "", number)
+        if digits:
+            cc = digits[0]
+            local = digits[1:]
+    if not local:
         return []
-    out = _run(["ignorant", "--only-used", f"+{cc}", nums], timeout=30)
+    out = _run(["ignorant", "--only-used", f"+{cc}", local], timeout=30)
     return re.findall(r"^\[\+\]\s+([a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,})", out, re.MULTILINE)
 
 

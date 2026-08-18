@@ -1,3 +1,5 @@
+import concurrent.futures
+
 from . import utils
 
 
@@ -10,41 +12,69 @@ def investigate(raw_inputs):
         "orgs": set(), "asns": set(), "phones": set(),
     }
 
-    if "email" in inputs and "@" in inputs["email"]:
+    # Run the four modules concurrently — they're independent until the
+    # correlation step, so investigation wall-time is the slowest module,
+    # not the sum of all of them.
+    def _run_email():
+        if "email" not in inputs or "@" not in inputs["email"]:
+            return None
         from .email import email as _email
         try:
-            results["email"] = _email(inputs["email"])
-            entities["emails"].add(inputs["email"])
-            domain = inputs["email"].split("@")[-1]
-            entities["domains"].add(domain)
-            ip = _quick_resolve(domain)
-            if ip:
-                entities["ips"].add(ip)
+            return _email(inputs["email"])
         except Exception as e:
-            results["email"] = {"error": str(e)}
+            return {"error": str(e)}
 
-    if "username" in inputs:
+    def _run_username():
+        if "username" not in inputs:
+            return None
         from .username import username as _username
         try:
-            results["username"] = _username(inputs["username"])
+            return _username(inputs["username"])
         except Exception as e:
-            results["username"] = {"error": str(e)}
+            return {"error": str(e)}
 
-    if "phone" in inputs:
+    def _run_phone():
+        if "phone" not in inputs:
+            return None
         from .phone import phone as _phone
         try:
-            results["phone"] = _phone(inputs["phone"])
-            entities["phones"].add(inputs["phone"])
+            return _phone(inputs["phone"])
         except Exception as e:
-            results["phone"] = {"error": str(e)}
+            return {"error": str(e)}
 
-    if "website" in inputs:
+    def _run_website():
+        if "website" not in inputs:
+            return None
         from .website import website as _website
         try:
-            results["website"] = _website(inputs["website"])
-            entities["domains"].add(inputs["website"])
+            return _website(inputs["website"])
         except Exception as e:
-            results["website"] = {"error": str(e)}
+            return {"error": str(e)}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {
+            "email": pool.submit(_run_email),
+            "username": pool.submit(_run_username),
+            "phone": pool.submit(_run_phone),
+            "website": pool.submit(_run_website),
+        }
+        for key, fut in futures.items():
+            res = fut.result()
+            if res is not None:
+                results[key] = res
+
+    # Input-derived entities (known facts, independent of module success).
+    if "email" in inputs and "@" in inputs["email"]:
+        entities["emails"].add(inputs["email"])
+        domain = inputs["email"].split("@")[-1]
+        entities["domains"].add(domain)
+        ip = _quick_resolve(domain)
+        if ip:
+            entities["ips"].add(ip)
+    if "phone" in inputs:
+        entities["phones"].add(inputs["phone"])
+    if "website" in inputs:
+        entities["domains"].add(inputs["website"])
 
     r["results"] = results
     _collect_entities(results, entities)
@@ -69,6 +99,23 @@ def _collect_entities(results, entities):
             ip = ip.strip()
             if ip and ip.count(".") == 3:
                 entities["ips"].add(ip)
+
+        # Deep-recon additions: subdomains, TLS SANs, CSP, SPF third parties.
+        for key in ("subdomains", "wayback_subdomains", "csp_domains"):
+            for d in wr.get(key, []) or []:
+                d = str(d).strip().lower().rstrip(".")
+                if d and "." in d:
+                    entities["domains"].add(d)
+        tls_san = wr.get("tls", {}).get("san", "")
+        for d in tls_san.split(","):
+            d = d.strip().lower().rstrip(".")
+            if d:
+                entities["domains"].add(d)
+        spf = wr.get("dns_email_security", {}).get("spf_includes", "")
+        for d in spf.split(","):
+            d = d.strip().lower().rstrip(".")
+            if d:
+                entities["domains"].add(d)
 
         who = wr.get("whois", {})
         for k in ("Organization", "OrgName", "org", "Org"):
