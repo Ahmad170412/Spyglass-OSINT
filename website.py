@@ -106,6 +106,25 @@ user users v2 vendor version video views web webapp webroot wiki wpad.dat www
 xml xmlrpc
 """.strip().split()
 
+
+def _dir_wordlist():
+    """Bundled list, or a local SecLists directory wordlist when available."""
+    for path in (
+        "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt",
+        "/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt",
+        "/opt/homebrew/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt",
+        "/usr/local/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt",
+        os.path.expanduser("~/SecLists/Discovery/Web-Content/directory-list-2.3-medium.txt"),
+        os.path.expanduser("~/wordlists/directory-list-2.3-medium.txt"),
+    ):
+        try:
+            if os.path.isfile(path):
+                with open(path, encoding="utf-8", errors="ignore") as f:
+                    return [l.strip() for l in f if l.strip() and not l.startswith("#")]
+        except OSError:
+            continue
+    return _DIR_LIST
+
 # Well-known files whose presence leaks configuration, secrets, or the stack.
 _EXPOSURE_PATHS = (
     "/.git/config", "/.git/HEAD", "/.env", "/.env.bak", "/.env.example",
@@ -1100,13 +1119,14 @@ def _phase_whois(host):
 
 
 def _phase_dirs(host):
-    """Directory brute-force (gobuster, small bundled list)."""
+    """Directory brute-force (gobuster, SecLists wordlist when available)."""
     result = {}
     if _check_tool("gobuster", _GOBUSTER):
+        wordlist = _dir_wordlist()
         gb_out = _run(
             ["gobuster", "dir", "-u", f"https://{host}", "-w", "-", "-q", "-t", "20", "-k"]
             + (utils._proxy_args() if utils._PROXY else []),
-            timeout=90, stdin="\n".join(_DIR_LIST),
+            timeout=120, stdin="\n".join(wordlist),
         )
         dirs = sorted(set(re.findall(r"/(\S+)\s+\(Status:\s*\d+\)", gb_out)))
         if dirs:

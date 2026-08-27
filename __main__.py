@@ -24,7 +24,7 @@ _USAGE = ("Usage: spyglass email|username|phone|ip|website|metadata|darkweb|inve
           "       spyglass cases [list|diff|timeline|export] [<target>] [--type TYPE]")
 
 
-def _run_query(qtype, target, do_json=False, do_csv=False, do_report=False, sub_type=None, do_store=False):
+def _run_query(qtype, target, do_json=False, do_csv=False, do_report=False, sub_type=None, do_store=False, top_ports=None):
     """Run a single query, display results, export if requested."""
     qtype = qtype.lower()
     result = None
@@ -51,7 +51,7 @@ def _run_query(qtype, target, do_json=False, do_csv=False, do_report=False, sub_
         ui.show_metadata(result)
     elif qtype == "ip":
         ui.header("IP recon", target)
-        result = ip_address(target)
+        result = ip_address(target, top_ports)
         ui.show_ip(result)
     elif qtype == "darkweb":
         ui.header("Dark web search", target)
@@ -110,7 +110,7 @@ def _parse_investigation_input(raw):
 
 
 def _parse_args(argv):
-    """Parse CLI flags and return (proxy, json, csv, report, type, password, store, positional)."""
+    """Parse CLI flags and return (proxy, json, csv, report, type, password, store, top_ports, positional)."""
     proxy = None
     do_json = False
     do_csv = False
@@ -118,6 +118,7 @@ def _parse_args(argv):
     type_hint = None
     do_password = False
     do_store = False
+    top_ports = None
     positional = []
     i = 0
     while i < len(argv):
@@ -161,9 +162,17 @@ def _parse_args(argv):
             do_report = True
             i += 1
             continue
+        if a == "--top-ports" and i + 1 < len(argv):
+            top_ports = argv[i + 1]
+            i += 2
+            continue
+        if a.startswith("--top-ports="):
+            top_ports = a.split("=", 1)[1]
+            i += 1
+            continue
         positional.append(a)
         i += 1
-    return proxy, do_json, do_csv, do_report, type_hint, do_password, do_store, positional
+    return proxy, do_json, do_csv, do_report, type_hint, do_password, do_store, top_ports, positional
 
 
 def _run_investigation(do_json, do_csv, do_report=False, do_store=False):
@@ -266,7 +275,7 @@ def _run_cases(subcommand, target=None, qtype=None, do_json=False):
 
 
 def _cli():
-    proxy, do_json, do_csv, do_report, type_hint, do_password, do_store, positional = _parse_args(sys.argv[1:])
+    proxy, do_json, do_csv, do_report, type_hint, do_password, do_store, top_ports, positional = _parse_args(sys.argv[1:])
 
     if proxy:
         set_proxy(proxy)
@@ -289,7 +298,7 @@ def _cli():
                      "investigation", "darkweb"):
             target = " ".join(positional[1:]) if qtype == "investigation" else positional[1]
             _run_query(qtype, target, do_json, do_csv, do_report,
-                       sub_type=type_hint, do_store=do_store)
+                       sub_type=type_hint, do_store=do_store, top_ports=top_ports)
         else:
             ui.warn(_USAGE)
         return

@@ -8,7 +8,7 @@ _COMMON_PORTS = [21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 443, 445,
                  5986, 6379, 8080, 8443, 9090, 27017]
 
 
-def address(target):
+def address(target, top_ports=None):
     target = target.strip()
     ip = _resolve(target)
     if not ip:
@@ -39,7 +39,7 @@ def address(target):
         if sd:
             r["shodan"] = sd
 
-    ports = _port_scan(ip)
+    ports = _port_scan(ip, top_ports)
     if ports:
         r["open_ports"] = ports
 
@@ -141,12 +141,15 @@ def _shodan_lookup(ip):
     return sd if sd else None
 
 
-def _port_scan(ip):
+def _port_scan(ip, top_ports=None):
     if not _check_tool("nmap", _NMAP):
         return None
-    ports_str = ",".join(str(p) for p in _COMMON_PORTS)
-    out = _run(["nmap", "-Pn", "-n", "--open", "-T4",
-                "-p", ports_str, "--min-rate", "1000", ip], timeout=120)
+    if top_ports:
+        port_args = ["--top-ports", str(top_ports)]
+    else:
+        ports_str = ",".join(str(p) for p in _COMMON_PORTS)
+        port_args = ["-p", ports_str]
+    out = _run(["nmap", "-Pn", "-n", "--open", "-T4"] + port_args + ["--min-rate", "1000", ip], timeout=120)
     if not out:
         return None
     found = []

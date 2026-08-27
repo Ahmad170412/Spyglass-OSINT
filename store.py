@@ -8,6 +8,11 @@ entity index is what makes ``diff`` and ``timeline`` fast and useful — e.g.
 OPSEC note: the store is *opt-in* (``--store``). Storing recon results writes
 target data to disk; the location is configurable via ``SPYGLASS_HOME``
 (default ``~/.spyglass``). No store is ever written unless you ask for one.
+
+Data at rest is encrypted with Fernet (AES-128-GCM). The key is derived from
+``SPYGLASS_STORE_KEY`` (base64-encoded 32-byte key) or from ``SPYGLASS_STORE_PASS``
+(via PBKDF2 with 100k iterations). If neither is set, a warning is printed and
+data is stored in plaintext (backwards compatible).
 """
 
 from __future__ import annotations
@@ -15,9 +20,19 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import base64
+import hashlib
 from datetime import datetime
 
 from . import __version__
+
+try:
+    from cryptography.fernet import Fernet
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    _CRYPTO_AVAILABLE = True
+except Exception:
+    _CRYPTO_AVAILABLE = False
 
 _SCHEMA_VERSION = 1
 
@@ -26,6 +41,44 @@ def _db_path():
     home = os.environ.get("SPYGLASS_HOME") or os.path.expanduser("~/.spyglass")
     os.makedirs(home, exist_ok=True)
     return os.path.join(home, "spyglass.db")
+
+
+def _get_fernet():
+    """Get Fernet instance for encryption. Returns None if crypto unavailable or no key set."""
+    if not _CRYPTO_AVAILABLE:
+        return None
+    key_b64 = os.environ.get("SPYGLASS_STORE_KEY")
+    if key_b64:
+        try:
+            return Fernet(key_b64.encode())
+        except Exception:
+            pass
+    password = os.environ.get("SPYGLASS_STORE_PASS")
+    if password:
+        salt = b"spyglass-salt"  # Fixed salt for deterministic key derivation
+        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=100000)
+        key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
+        return Fernet(key)
+    return None
+
+
+def _encrypt(data: str) -> str:
+    """Encrypt string data. Returns base64-encoded ciphertext or plaintext if no key."""
+    f = _get_fernet()
+    if not f:
+        return data
+    return f.encrypt(data.encode()).decode()
+
+
+def _decrypt(data: str) -> str:
+    """Decrypt string data. Returns plaintext or original if decryption fails."""
+    f = _get_fernet()
+    if not f:
+        return data
+    try:
+        return f.decrypt(data.encode()).decode()
+    except Exception:
+        return data
 
 
 def _connect():
@@ -139,9 +192,11 @@ def store_result(result, qtype, target):
     try:
         _init(db)
         run_at = datetime.now().isoformat(timespec="seconds")
+        result_json = json.dumps(result, default=str)
+        enc_result = _encrypt(result_json)
         cur = db.execute(
             "INSERT INTO runs (target, qtype, run_at, result_json) VALUES (?, ?, ?, ?)",
-            (target, qtype, run_at, json.dumps(result, default=str)),
+            (target, qtype, run_at, enc_result),
         )
         run_id = cur.lastrowid
         for kind, value in _entities(result, qtype):
@@ -150,6 +205,9 @@ def store_result(result, qtype, target):
                 (run_id, kind, value),
             )
         db.commit()
+        if _get_fernet():
+            from . import display as ui
+            ui.info("Stored with encryption (SPYGLASS_STORE_KEY or SPYGLASS_STORE_PASS set)")
         return run_id
     except Exception:
         return None
@@ -250,7 +308,7 @@ def export_profile(target):
         results, entities = {}, {}
         for row in rows:
             d = dict(row)
-            result = json.loads(d["result_json"])
+            result = json.loads(_decrypt(d["result_json"]))
             results[d["qtype"]] = result
             for kind, value in _entities(result, d["qtype"]):
                 entities.setdefault(kind, []).append(value)

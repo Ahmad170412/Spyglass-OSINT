@@ -155,7 +155,8 @@ def _verify(urls, max_workers=30, timeout=10, silent=False):
             if _PROXY:
                 cmd = cmd[:1] + _proxy_args() + cmd[1:]
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-            return r.stdout.strip() == "200"
+            code = r.stdout.strip()
+            return code.isdigit() and 200 <= int(code) < 400
         except Exception:
             return False
 

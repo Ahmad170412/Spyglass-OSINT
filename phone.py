@@ -49,35 +49,49 @@ def _phonenumbers_info(number):
 def _phoneinfoga(number):
     if not _check_tool("phoneinfoga", _PHONEINFOGA):
         return {}
-    out = _run(["phoneinfoga", "scan", "-n", number], timeout=30)
+    out = _run(["phoneinfoga", "scan", "-n", number, "-o", "json"], timeout=30)
+    if not out:
+        return {}
+    try:
+        data = json.loads(out)
+        return _parse_phoneinfoga_json(data)
+    except Exception:
+        return {}
+
+
+def _parse_phoneinfoga_json(data):
+    """Parse PhoneInfoga JSON output into the expected dict structure."""
     info = {}
-    m = re.search(r"Raw local: (\S+)", out)
-    if m: info["raw"] = m.group(1)
-    m = re.search(r"Local: (.+)", out)
-    if m: info["local"] = m.group(1).strip()
-    m = re.search(r"E164: (\S+)", out)
-    if m: info["e164"] = m.group(1)
-    m = re.search(r"International: (\S+)", out)
-    if m: info["international"] = m.group(1)
-    m = re.search(r"Country: (\S+)", out)
-    if m: info["country"] = m.group(1)
-
-    sections = {}
-    current = None
-    for line in out.split("\n"):
-        s = re.match(r"^([A-Za-z /]+):$", line.strip())
-        if s:
-            current = s.group(1).strip().lower().replace(" ", "_")
-            sections[current] = []
-        elif current and line.strip().startswith("URL:"):
-            url = line.strip()[4:].strip()
-            sections[current].append(url)
-
-    info["sections"] = sections
+    # PhoneInfoga JSON structure varies by version; handle common patterns
+    if isinstance(data, dict):
+        # Single result object
+        for key in ("raw", "local", "e164", "international", "country"):
+            if key in data:
+                info[key] = data[key]
+        # Sections with URLs
+        sections = {}
+        for key in ("osint", "social", "cnam", "other"):
+            if key in data and isinstance(data[key], list):
+                urls = []
+                for item in data[key]:
+                    if isinstance(item, dict) and item.get("url"):
+                        urls.append(item["url"])
+                    elif isinstance(item, str):
+                        urls.append(item)
+                if urls:
+                    sections[key] = urls
+        if sections:
+            info["sections"] = sections
+    elif isinstance(data, list):
+        # Array of results - merge them
+        for item in data:
+            parsed = _parse_phoneinfoga_json(item)
+            for k, v in parsed.items():
+                if k == "sections":
+                    info.setdefault("sections", {}).update(v)
+                elif k not in info:
+                    info[k] = v
     return info
-
-
-def _ignorant(number):
     if not _check_tool("ignorant", _IGNORANT):
         return []
     # Derive the country code and local number from phonenumbers instead of

@@ -2,6 +2,7 @@ import os
 import re
 import json
 import subprocess
+import hashlib
 from datetime import datetime
 
 from .utils import _run, _check_tool, _EXIFTOOL
@@ -40,6 +41,7 @@ def extract(path):
 
 def _file_info(path):
     st = os.stat(path)
+    hashes = _compute_hashes(path)
     return {
         "file_name": os.path.basename(path),
         "file_size": _human_size(st.st_size),
@@ -47,7 +49,23 @@ def _file_info(path):
         "created": datetime.fromtimestamp(st.st_birthtime).isoformat() if hasattr(st, "st_birthtime") else "N/A",
         "modified": datetime.fromtimestamp(st.st_mtime).isoformat(),
         "accessed": datetime.fromtimestamp(st.st_atime).isoformat(),
+        "md5": hashes["md5"],
+        "sha256": hashes["sha256"],
     }
+
+
+def _compute_hashes(path):
+    """Compute MD5 and SHA256 hashes of a file."""
+    md5_hash = hashlib.md5()
+    sha256_hash = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                md5_hash.update(chunk)
+                sha256_hash.update(chunk)
+        return {"md5": md5_hash.hexdigest(), "sha256": sha256_hash.hexdigest()}
+    except Exception:
+        return {"md5": "N/A", "sha256": "N/A"}
 
 
 def _exiftool_extract(path):
