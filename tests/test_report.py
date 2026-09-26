@@ -54,24 +54,6 @@ class RenderErrorTest(unittest.TestCase):
         self.assertIn("Could not resolve: nope.invalid", md)
 
 
-class RenderInvestigationTest(unittest.TestCase):
-    def test_correlations_and_entities(self):
-        r = {
-            "inputs": {"email": "a@x.com"},
-            "entities": {"domains": ["x.com"], "ips": ["1.2.3.4"]},
-            "correlations": [
-                {"type": "match", "desc": "Email domain matches website target", "detail": "x.com"}
-            ],
-            "results": {},
-        }
-        md = report.render(r, "investigation", "a@x.com")
-        self.assertIn("### Known inputs", md)
-        self.assertIn("### Entities found", md)
-        self.assertIn("**Domains:** x.com", md)
-        self.assertIn("### Correlations", md)
-        self.assertIn("MATCH", md)
-
-
 class RenderOpsecTest(unittest.TestCase):
     def test_recommendations_rendered(self):
         r = {

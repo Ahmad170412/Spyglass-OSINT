@@ -100,6 +100,8 @@ def _render_email(r: dict) -> list[str]:
         items = r.get(key, [])
         if items:
             lines += _section(label, items)
+    lines += _rejected_section(r)
+    lines += _render_gravatar(r.get("gravatar"))
     lines.append("### Breach data")
     lines.append("")
     lines += _breach_lines(r.get("breach", {}))
@@ -107,29 +109,69 @@ def _render_email(r: dict) -> list[str]:
     return lines
 
 
+def _rejected_section(r) -> list[str]:
+    """Record what verification discarded, so a short result set is auditable."""
+    rejected = r.get("rejected") or {}
+    if not rejected:
+        return []
+    seen = r.get("candidates")
+    head = f"### Filtered — fetched but not real profiles ({sum(rejected.values())})"
+    rows = [f"- {n} — {why}" for why, n in sorted(rejected.items(), key=lambda kv: -kv[1])]
+    out = [head, ""]
+    if seen:
+        out += [f"_{sum(rejected.values())} of {seen} candidates were discarded._", ""]
+    out += rows + [""]
+    return out
+
+
+def _render_gravatar(gv) -> list[str]:
+    """Render the Gravatar block for a dossier."""
+    if not gv:
+        return []
+    if gv.get("status") in ("error", "unavailable"):
+        return ["### Gravatar", "",
+                f"_{gv.get('reason', 'lookup failed')}_", ""]
+    if not gv.get("found"):
+        return ["### Gravatar", "", "_No public Gravatar profile for this address._", ""]
+
+    profile = {k: gv[k] for k in ("display_name", "username", "location", "profile_url")
+               if gv.get(k)}
+    if gv.get("about"):
+        profile["About"] = gv["about"]
+    lines = _kv_section("Gravatar — public profile", profile) if profile \
+        else ["### Gravatar — public profile", ""]
+
+    accounts = gv.get("accounts") or []
+    if accounts:
+        lines += _section(
+            "Linked accounts (feed these to the username module)",
+            [f"{a['service']}: {a['username']} — {a['url']}" for a in accounts])
+    elif gv.get("note"):
+        lines += [f"_{gv['note']}_", ""]
+    return lines
+
+
 def _render_username(r: dict) -> list[str]:
-    labels = {
-        "all_4": "Username found on (all 4 tools agree)",
-        "all_3_no_bb": "user-scanner + sherlock + maigret (blackbird missed)",
-        "all_3_no_mg": "user-scanner + sherlock + blackbird (maigret missed)",
-        "all_3_no_sh": "user-scanner + maigret + blackbird (sherlock missed)",
-        "all_3_no_us": "sherlock + maigret + blackbird (user-scanner missed)",
-        "us+sherlock": "user-scanner + sherlock agree (others missed)",
-        "us+maigret": "user-scanner + maigret agree (others missed)",
-        "us+blackbird": "user-scanner + blackbird agree (others missed)",
-        "sherlock+maigret": "sherlock + maigret agree (others missed)",
-        "sherlock+blackbird": "sherlock + blackbird agree (others missed)",
-        "maigret+blackbird": "maigret + blackbird agree (others missed)",
-        "us_only": "Only user-scanner found",
-        "sherlock_only": "Only sherlock found",
-        "maigret_only": "Only maigret found",
-        "blackbird_only": "Only blackbird found",
-    }
+    # Labels come from the module that owns the keys, so the CLI, the console and
+    # the dossier cannot drift into three different wordings for the same bucket.
+    from .username import SECTION_LABELS
     lines = []
-    for key, label in labels.items():
-        items = r.get(key, [])
+    for key, label in SECTION_LABELS.items():
+        if key == "breach":
+            continue
+        items = r.get(key)
         if items:
             lines += _section(label, items)
+    if r.get("verdict"):
+        lines += [f"> **{r['verdict']}**", ""]
+    details = r.get("details") or {}
+    if details:
+        rows = []
+        for domain, fields in details.items():
+            rows.append(f"- **{domain}**")
+            rows += [f"    - {k}: {v}" for k, v in fields.items()]
+        lines += _section("Extracted account data (maigret)", rows)
+    lines += _rejected_section(r)
     lines.append("### Breach data")
     lines.append("")
     lines += _breach_lines(r.get("breach", {}))
@@ -182,6 +224,46 @@ def _render_phone(r: dict) -> list[str]:
     return lines
 
 
+def _render_vulns(vn) -> list[str]:
+    """Render the NVD block.
+
+    The affected-version range is printed next to every advisory on purpose.
+    NVD routinely widens a range after publication while the advisory text keeps
+    its original wording, so a report that showed only the description would
+    read as though the match were wrong.
+    """
+    if not vn:
+        return []
+    count = vn.get("cve_count", 0)
+    lines = [f"### Known vulnerabilities — {count} CVE{'s' if count != 1 else ''}", ""]
+    if vn.get("status") == "error":
+        lines += [f"_Lookup failed: {vn.get('reason', 'unknown')}_", ""]
+        return lines
+    if not count:
+        lines += ["_No known CVEs for the versions detected._", ""]
+        return lines
+
+    for c in vn.get("cves", []):
+        sev = (c.get("severity") or "UNKNOWN").upper()
+        score = f" ({c['score']})" if c.get("score") is not None else ""
+        head = f"**{c['id']}** — {sev}{score} — {c.get('product')} {c.get('version')}"
+        lines.append(f"- {head}")
+        if c.get("affected"):
+            lines.append(f"    - Affected: {'; '.join(c['affected'])}")
+        if c.get("published"):
+            lines.append(f"    - Published: {c['published']}")
+        if c.get("description"):
+            lines.append(f"    - {c['description']}")
+        for ref in (c.get("references") or [])[:3]:
+            lines.append(f"    - {ref}")
+    if vn.get("skipped"):
+        lines += ["", f"_Not queried (component cap reached): "
+                      f"{', '.join(vn['skipped'])}_"]
+    lines += ["", "_Affected ranges are NVD's structured data; advisory prose keeps "
+                  "its original wording after a range is widened._", ""]
+    return lines
+
+
 def _render_website(r: dict) -> list[str]:
     lines = []
     if "error" in r:
@@ -221,6 +303,7 @@ def _render_website(r: dict) -> list[str]:
         items = r.get(key)
         if items:
             lines += _section(label, items)
+    lines += _render_vulns(r.get("vulns"))
     headers = r.get("http_headers", {})
     if headers:
         lines += _kv_section("HTTP headers", headers)
@@ -414,53 +497,6 @@ def _render_opsec(r: dict) -> list[str]:
     return lines
 
 
-def _render_investigation(r: dict) -> list[str]:
-    lines = []
-    inputs = r.get("inputs", {})
-    if inputs:
-        lines += _kv_section("Known inputs", inputs)
-    entities = r.get("entities", {})
-    if entities:
-        lines.append("### Entities found")
-        lines.append("")
-        for kind, vals in entities.items():
-            lines.append(f"- **{kind.capitalize()}:** {', '.join(vals)}")
-        lines.append("")
-    corr = r.get("correlations", [])
-    lines.append("### Correlations")
-    lines.append("")
-    if corr:
-        for c in corr:
-            desc = c.get("desc", "")
-            detail = c.get("detail")
-            lines.append(f"- **{c.get('type', 'info').upper()}:** {desc}"
-                         + (f" — `{detail}`" if detail else ""))
-    else:
-        lines.append("_No cross-module correlations found._")
-    lines.append("")
-    results = r.get("results", {})
-    for qtype, res in results.items():
-        if isinstance(res, dict) and res.get("error"):
-            lines.append(f"### {qtype.capitalize()}")
-            lines.append("")
-            lines.append(f"> {res['error']}")
-            lines.append("")
-            continue
-        lines.append(f"## {qtype.capitalize()}")
-        lines.append("")
-        if qtype == "email" and isinstance(res, dict):
-            lines += _render_email(res)
-        elif qtype == "username" and isinstance(res, dict):
-            lines += _render_username(res)
-        elif qtype == "phone" and isinstance(res, dict):
-            lines += _render_phone(res)
-        elif qtype == "website" and isinstance(res, dict):
-            lines += _render_website(res)
-        elif isinstance(res, dict):
-            lines += _render_generic(res)
-    return lines
-
-
 def _render_generic(data: dict, depth: int = 0) -> list[str]:
     """Fallback renderer for unknown dict-shaped results."""
     lines = []
@@ -494,7 +530,6 @@ def render(result, qtype: str, target: str) -> str:
         "metadata": _render_metadata,
         "opsec": _render_opsec,
         "darkweb": _render_darkweb,
-        "investigation": _render_investigation,
     }
     body = renderers.get(qtype, _render_generic)(result if isinstance(result, dict) else {})
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

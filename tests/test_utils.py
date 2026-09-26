@@ -1,6 +1,7 @@
 """Tests for utils.py: domain parsing, entity extraction, safe filenames."""
 
 import unittest
+from unittest import mock
 
 from helpers import imp
 
@@ -127,6 +128,202 @@ class SafeNameTest(unittest.TestCase):
     def test_empty_falls_back(self):
         self.assertEqual(utils.safe_name(""), "target")
         self.assertEqual(utils.safe_name("///"), "target")
+
+
+class PageIsRealTest(unittest.TestCase):
+    """Body inspection behind _verify.
+
+    Every fixture here is modelled on a response that was observed returning
+    HTTP 200 for a profile that does not exist.
+    """
+
+    @staticmethod
+    def _body(text, pad=0):
+        return text + ("x" * pad)
+
+    def test_real_page_passes(self):
+        body = self._body("<html><head><title>Jane Doe</title></head>"
+                          "<body>profile</body></html>", pad=3000)
+        ok, why = utils._page_is_real(body, 200)
+        self.assertTrue(ok)
+        self.assertEqual(why, "ok")
+
+    def test_challenge_titles_are_rejected(self):
+        for title in ("Just a moment...", "Security Verification",
+                      "Client Challenge", "Attention Required! | Cloudflare",
+                      "Checking your browser before accessing",
+                      "403 Forbidden", "Are you a robot?"):
+            body = self._body(f"<html><head><title>{title}</title></head>"
+                              "<body>real content here</body></html>", pad=3000)
+            ok, why = utils._page_is_real(body, 200)
+            self.assertFalse(ok, title)
+            self.assertIn("challenge", why, title)
+
+    def test_specific_challenge_body_markers_are_rejected(self):
+        for marker in ("cf-browser-verification", "cf_chl_opt", "cf-turnstile",
+                       "px-captcha", "ddos protection by", "enable javascript and cookies"):
+            body = self._body(f"<html><body>{marker}</body></html>", pad=3000)
+            ok, why = utils._page_is_real(body, 200)
+            self.assertFalse(ok, marker)
+            self.assertEqual(why, "bot challenge", marker)
+
+    def test_generic_words_in_a_script_payload_do_not_reject(self):
+        # Regression: a whole-body scan for "captcha" matched GitHub's own
+        # feature flag "octocaptcha_origin_optimization" in the JS payload and
+        # rejected every real GitHub profile as a bot challenge.
+        body = self._body(
+            "<html><head><title>torvalds (Linus Torvalds) - GitHub</title></head>"
+            '<body><script>{"enabled_features":["octocaptcha_origin_optimization",'
+            '"captcha_secret"]}</script><p>Linus Torvalds</p></body></html>', pad=3000)
+        ok, why = utils._page_is_real(body, 200)
+        self.assertTrue(ok, why)
+
+    def test_not_found_rejected_from_title(self):
+        body = self._body("<html><head><title>Page not found</title></head>"
+                          "<body>404</body></html>", pad=3000)
+        ok, why = utils._page_is_real(body, 200)
+        self.assertFalse(ok)
+        self.assertIn("not found", why)
+
+    def test_not_found_phrase_in_body_alone_is_not_rejected(self):
+        # Forum templates and ad scripts mention "not found" in unrelated copy;
+        # matching the body would throw away genuine profiles.
+        body = self._body("<html><head><title>Jane Doe</title></head>"
+                          "<body>this post was not found in the archive</body></html>",
+                          pad=3000)
+        ok, _ = utils._page_is_real(body, 200)
+        self.assertTrue(ok)
+
+    def test_empty_spa_shell_rejected_on_size(self):
+        ok, why = utils._page_is_real("<html><body></body></html>", 200)
+        self.assertFalse(ok)
+        self.assertIn("too small", why)
+
+    def test_non_2xx_rejected(self):
+        body = self._body("<html><title>Jane</title></html>", pad=3000)
+        for code in (301, 404, 403, 500):
+            ok, why = utils._page_is_real(body, code)
+            if code == 301:
+                self.assertTrue(ok, why)   # redirects are still followed
+            else:
+                self.assertFalse(ok, code)
+
+
+class _FakeProc:
+    """Stands in for subprocess.CompletedProcess."""
+
+    def __init__(self, stdout):
+        self.stdout = stdout
+        self.returncode = 0
+        self.stderr = ""
+
+
+def _fake_curl(pages):
+    """Patch subprocess.run so curl returns `pages` keyed by URL.
+
+    ``pages`` maps a URL to ``(body, status)``. Anything unmapped 404s.
+    """
+    def _run(cmd, **kwargs):
+        body, code = pages.get(cmd[-1], ("", 404))
+        return _FakeProc(f"{body}\n{code}")
+    return mock.patch.object(utils.subprocess, "run", side_effect=_run)
+
+
+class VerifyTest(unittest.TestCase):
+    """The network call is stubbed; only the decision logic is exercised."""
+
+    RICH = "<html><head><title>Jane Doe</title></head><body>jane jane profile</body></html>" + "x" * 3000
+    # A 610KB signup interstitial that echoes the requested slug dozens of times
+    # and names a different person in its title. Counting occurrences admits it;
+    # requiring the page to *state* the handle rejects it.
+    INTERSTITIAL = ('<html><head><title>Signup for free to see more about Anthony'
+                    "</title></head><body>" + ("@jdoe " * 400) + "</body></html>")
+    # A real interstitial names itself in the <title>; that is the reliable signal.
+    CHALLENGE = "<html><head><title>Just a moment...</title></head><body>checking</body></html>" + "x" * 3000
+    SHELL = "<html><head><title>Bluesky</title></head><body></body></html>" + "x" * 3000
+
+    def test_empty_input_short_circuits(self):
+        self.assertEqual(utils._verify([]), set())
+
+    def test_existing_profile_passes(self):
+        with _fake_curl({"u": (self.RICH, 200)}):
+            self.assertEqual(utils._verify(["u"], silent=True), {"u"})
+
+    def test_challenge_is_rejected(self):
+        with _fake_curl({"u": (self.CHALLENGE, 200)}):
+            self.assertEqual(utils._verify(["u"], silent=True), set())
+
+    def test_empty_shell_is_rejected(self):
+        with _fake_curl({"u": ("<html></html>", 200)}):
+            self.assertEqual(utils._verify(["u"], silent=True), set())
+
+    def test_not_found_title_is_rejected(self):
+        with _fake_curl({"u": ("<html><title>404 Not Found</title></html>" + "x" * 3000, 200)}):
+            self.assertEqual(utils._verify(["u"], silent=True), set())
+
+    def test_expect_rejects_page_that_omits_the_term(self):
+        with _fake_curl({"u": (self.SHELL, 200)}):
+            self.assertEqual(utils._verify(["u"], silent=True, expect="jdoe"), set())
+
+    def test_expect_rejects_a_bare_echo_of_the_term(self):
+        # A Mastodon soft-404 returns 200, ~50KB, no error marker, and reproduces
+        # the requested handle exactly once. A real profile names it in its title.
+        echo = "<html><head><title>Mastodon</title></head><body>" \
+               "@jdoe" + "x" * 4000 + "</body></html>"
+        with _fake_curl({"u": (echo, 200)}):
+            self.assertEqual(utils._verify(["u"], silent=True, expect="jdoe"), set())
+
+    def test_registration_prompt_is_rejected_however_large(self):
+        with _fake_curl({"u": (self.INTERSTITIAL, 200)}):
+            self.assertEqual(utils._verify(["u"], silent=True, expect="jdoe"), set())
+
+    def test_a_real_profile_titled_by_display_name_is_kept(self):
+        # Regression: requiring the handle in the title rejected a real YouTube
+        # profile titled "Nat - YouTube" belonging to the handle "qrxznat".
+        body = ('<html><head><title>Nat - YouTube</title></head><body>'
+                + ("qrxznat " * 200) + "</body></html>")
+        with _fake_curl({"u": (body, 200)}):
+            self.assertEqual(utils._verify(["u"], silent=True, expect="qrxznat"), {"u"})
+
+    def test_single_mention_is_treated_as_an_echo(self):
+        once = "<html><head><title>Profile</title></head><body>jdoe" + "x" * 3000 + "</body></html>"
+        with _fake_curl({"u": (once, 200)}):
+            self.assertEqual(utils._verify(["u"], silent=True, expect="jdoe"), set())
+
+    def test_expect_accepts_a_repeated_term(self):
+        with _fake_curl({"u": (self.RICH, 200)}):
+            self.assertEqual(utils._verify(["u"], silent=True, expect="jane"), {"u"})
+
+    def test_expect_is_case_insensitive(self):
+        body = "<html><title>JDOE</title></html>jdoe jdoe" + "x" * 3000
+        with _fake_curl({"u": (body, 200)}):
+            self.assertEqual(utils._verify(["u"], silent=True, expect="jdoe"), {"u"})
+
+    def test_malformed_status_is_rejected(self):
+        with _fake_curl({"u": ("body", "abc")}):
+            self.assertEqual(utils._verify(["u"], silent=True), set())
+
+    def test_rejections_tally_is_reported_to_the_caller(self):
+        # Without this the filtering is invisible and a search that found six and
+        # kept one looks identical to one that found a single result.
+        tally = {}
+        with _fake_curl({"good": (self.RICH, 200), "bad": (self.CHALLENGE, 200)}):
+            utils._verify(["good", "bad"], silent=True, rejections=tally)
+        self.assertEqual(sum(tally.values()), 1)
+        self.assertTrue(any("challenge" in k for k in tally), tally)
+
+    def test_rejections_are_cleared_not_accumulated_across_calls(self):
+        tally = {}
+        with _fake_curl({"bad": (self.CHALLENGE, 200)}):
+            utils._verify(["bad"], silent=True, rejections=tally)
+        first = dict(tally)
+        with _fake_curl({"good": (self.RICH, 200)}):
+            utils._verify(["good"], silent=True, rejections=tally)
+        self.assertEqual(tally, {})
+
+    def test_mixed_set_keeps_only_the_real_one(self):
+        with _fake_curl({"good": (self.RICH, 200), "bad": (self.CHALLENGE, 200)}):
+            self.assertEqual(utils._verify(["good", "bad"], silent=True), {"good"})
 
 
 if __name__ == "__main__":
