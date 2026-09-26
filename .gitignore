@@ -7,6 +7,14 @@ Thumbs.db
 # Session / temp
 logs/
 
+# Generated output — --json, --csv and --report all write to the working
+# directory, and recon results are sensitive, so they should never be staged
+# by accident.
+reports/
+spyglass_*.json
+spyglass_*.csv
+spyglass_report_*.md
+
 # Python
 __pycache__/
 *.py[cod]

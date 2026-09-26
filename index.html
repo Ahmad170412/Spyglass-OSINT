@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="ops">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SPYGLASS // OSINT CONSOLE</title>
+<meta name="description" content="Placeholder OSINT operations console — collection input surfaces only." />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23060607'/%3E%3Crect x='9' y='9' width='14' height='14' fill='%23ff2b2b'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet" />
+<style>
+/* ============================================================
+   TOKENS
+   ============================================================ */
+:root{
+  --bg:#060607;
+  --bg-1:#0a0a0c;
+  --bg-2:#101014;
+  --line:rgba(255,255,255,.07);
+  --line-2:rgba(255,255,255,.13);
+  --txt:#eaeaec;
+  /* The dim end of the ramp was unreadable on the near-black background:
+     --txt-3 and --txt-4 sat at roughly 3:1 and 1.6:1 against --bg. Lifted here
+     rather than rule by rule, so every dim label in the console brightens at
+     once. The steps are still ordered, so hierarchy is preserved. */
+  --txt-2:#adadb8;
+  --txt-3:#8b8b96;
+  --txt-4:#787885;
+  --red:#ff2b2b;
+  --red-2:#ff5a5a;
+  --red-line:rgba(255,43,43,.34);
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sb-w:236px;
+  --top-h:46px;
+  --r:2px;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg);
+  color:var(--txt);
+  font-family:var(--mono);
+  font-size:13px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  overflow:hidden;
+}
+::selection{background:var(--red);color:#000}
+*::-webkit-scrollbar{width:9px;height:9px}
+*::-webkit-scrollbar-track{background:transparent}
+*::-webkit-scrollbar-thumb{background:#1e1e24;border:2px solid var(--bg);border-radius:9px}
+*::-webkit-scrollbar-thumb:hover{background:#2c2c34}
+
+/* ============================================================
+   TEXTURES
+   ============================================================ */
+body::before{
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:900;
+  background-image:repeating-linear-gradient(0deg,rgba(255,255,255,.013) 0 1px,transparent 1px 3px);
+  mix-blend-mode:overlay;
+}
+body::after{
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:901;
+  background:radial-gradient(120% 90% at 50% 0%,transparent 38%,rgba(0,0,0,.6) 100%);
+}
+.vignette{position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:radial-gradient(70% 58% at 50% 44%,rgba(255,43,43,.05),transparent 72%);}
+
+/* ============================================================
+   TYPE
+   ============================================================ */
+.lbl{font-size:9.5px;font-weight:500;letter-spacing:.18em;text-transform:uppercase;color:var(--txt-3)}
+.hide{display:none !important}
+
+/* ============================================================
+   SIDEBAR
+   ============================================================ */
+.app{display:grid;grid-template-columns:var(--sb-w) 1fr;height:100vh;position:relative;z-index:2}
+.sidebar{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--line);background:var(--bg-1)}
+
+.brand{height:var(--top-h);display:flex;align-items:center;gap:10px;padding:0 16px;
+  border-bottom:1px solid var(--line);flex-shrink:0}
+.brand .mk{width:20px;height:20px;position:relative;flex-shrink:0;border:1px solid var(--red-line)}
+.brand .mk::before{content:'';position:absolute;inset:4px;background:var(--red);box-shadow:0 0 10px rgba(255,43,43,.5)}
+.brand .nm{font-size:12px;font-weight:700;letter-spacing:.14em}
+.brand .nm i{font-style:normal;color:var(--red)}
+
+.nav{padding:14px 0;overflow-y:auto;flex:1}
+.nav-grp{padding:0 16px;margin:0 0 8px;display:flex;align-items:center;gap:8px}
+.nav-grp::after{content:'';flex:1;height:1px;background:var(--line)}
+
+.nav-i{display:flex;align-items:center;gap:10px;height:36px;padding:0 16px;
+  color:var(--txt-2);cursor:pointer;border-left:2px solid transparent;transition:background .12s,color .12s}
+.nav-i:hover{background:rgba(255,255,255,.028);color:var(--txt)}
+.nav-i .ix{font-size:9px;color:var(--txt-4);width:14px;flex-shrink:0}
+.nav-i .ic{width:15px;height:15px;flex-shrink:0;opacity:.7}
+.nav-i .tx{font-size:11.5px;white-space:nowrap}
+.nav-i.act{background:linear-gradient(90deg,rgba(255,43,43,.12),transparent 72%);
+  color:#fff;border-left-color:var(--red)}
+.nav-i.act .ic{opacity:1}
+.nav-i.act .ix{color:var(--red)}
+
+/* ============================================================
+   MAIN
+   ============================================================ */
+/* min-height:0 on both the column and the scroll pane is load-bearing. A flex
+   item defaults to min-height:auto, which refuses to shrink below its content,
+   so .main grew past the 100vh grid row and .scroll ended up as tall as its
+   content — leaving nothing to scroll, with body{overflow:hidden} hiding the
+   rest. .sidebar already had it, which is why the nav column scrolled fine. */
+.main{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--bg)}
+.scroll{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+
+/* ============================================================
+   CENTRED STAGE
+   ============================================================ */
+.stage{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:46px 26px 56px}
+.col{width:100%;max-width:560px;display:flex;flex-direction:column;gap:20px}
+
+.page-h{text-align:center;display:flex;flex-direction:column;align-items:center;gap:12px}
+.page-h h1{font-size:21px;font-weight:500;letter-spacing:-.015em;line-height:1.15;
+  display:flex;align-items:center;gap:10px;justify-content:center}
+.page-h h1 .sq{width:7px;height:7px;background:var(--red);border-radius:1px;box-shadow:0 0 10px rgba(255,43,43,.7)}
+/* Full body-text brightness: the description is content, not chrome. Hierarchy
+   against the h1 comes from size and weight, not from dimming it. Was a
+   hardcoded #a9a9b2, which sat below body text and off the token scale. */
+.page-h .sub{font-size:12px;color:var(--txt);line-height:1.65;max-width:52ch}
+
+/* ============================================================
+   CARD + CONTROLS
+   ============================================================ */
+.card{border:1px solid var(--line);background:var(--bg-1);border-radius:var(--r)}
+.card-b{padding:18px 18px 20px}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  height:32px;padding:0 16px;border-radius:var(--r);cursor:pointer;
+  border:1px solid var(--red);background:var(--red);color:#0a0000;
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;
+  font-weight:700;transition:.13s;white-space:nowrap;width:100%}
+.btn:hover{background:var(--red-2);border-color:var(--red-2);box-shadow:0 0 22px -3px rgba(255,43,43,.55)}
+.btn .ic{width:13px;height:13px}
+.btn[disabled]{opacity:.45;pointer-events:none}
+
+.field{display:flex;flex-direction:column;gap:8px}
+.inwrap{display:flex;align-items:center;gap:10px;height:42px;padding:0 13px;flex-wrap:nowrap;
+  border:1px solid var(--line-2);background:var(--bg-2);border-radius:var(--r);
+  transition:border-color .15s,box-shadow .15s}
+.inwrap:focus-within{border-color:var(--red-line);box-shadow:0 0 0 3px rgba(255,43,43,.07)}
+.inwrap .pfx{color:var(--txt-3);font-size:14px;flex-shrink:0}
+.inwrap .ic{width:14px;height:14px;color:var(--txt-3);flex-shrink:0}
+.inwrap input{flex:1;min-width:0;background:none;border:0;outline:0;color:var(--txt);
+  font-family:var(--mono);font-size:13px}
+.inwrap input::placeholder{color:var(--txt-4)}
+
+.btnrow{margin-top:18px}
+.or{display:flex;align-items:center;gap:12px;margin:18px 0}
+.or::before,.or::after{content:'';flex:1;height:1px;background:var(--line)}
+.or span{font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--txt-4)}
+
+/* ============================================================
+   DROPZONE
+   ============================================================ */
+.dz{border:1px dashed var(--line-2);border-radius:var(--r);
+  background:linear-gradient(180deg,rgba(255,43,43,.03),transparent);
+  padding:34px 22px;text-align:center;cursor:pointer;transition:.15s;position:relative;overflow:hidden}
+.dz::after{content:'';position:absolute;left:0;right:0;top:0;height:1px;
+  background:linear-gradient(90deg,transparent,var(--red-line),transparent);opacity:0;transition:.15s}
+.dz:hover{border-color:var(--red-line);background:linear-gradient(180deg,rgba(255,43,43,.06),transparent)}
+.dz:hover::after{opacity:1}
+.dz .ic{width:25px;height:25px;color:var(--red);opacity:.8;margin:0 auto 13px;display:block}
+.dz .t1{font-size:13px;color:var(--txt)}
+.dz .t2{font-size:10.5px;color:var(--txt-3);margin-top:7px;line-height:1.6}
+.dz .t3{font-size:9px;color:var(--txt-4);letter-spacing:.14em;margin-top:14px;text-transform:uppercase}
+
+/* ============================================================
+   EMPTY OUTPUT CHANNEL
+   ============================================================ */
+/* scan progress */
+.scan{text-align:center;margin-top:18px}
+.scan .bar{height:2px;background:#1c1c22;border-radius:2px;overflow:hidden;margin:12px auto 0;max-width:240px}
+.scan .bar i{display:block;height:100%;width:0;background:var(--red);
+  box-shadow:0 0 10px rgba(255,43,43,.8);transition:width .1s linear}
+
+/* ============================================================
+   RESULTS
+   ------------------------------------------------------------
+   Added for the live console. The module payloads are deeply
+   nested dicts, so the styling is built around a generic key/value
+   walker rather than per-module markup.
+   ============================================================ */
+#result{margin-top:16px}
+/* Was --txt-4, the dimmest token in the palette, which made the run summary the
+   least legible text on the page. */
+.run-meta{font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--txt-3);margin-bottom:10px}
+
+/* Section header — a structural divider, not a label. It was previously styled
+   almost identically to a table column header (same size, weight, case and
+   colour), so a section title read as just another table row. It is now larger,
+   bolder and brighter than anything inside it, and carries a red tick; column
+   headers sit a full step below it in size and brightness. */
+.sec-h{font-size:11px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--txt);margin:28px 0 12px;padding:0 0 8px 11px;
+  border-bottom:1px solid var(--line-2);display:flex;justify-content:space-between;
+  align-items:baseline;gap:10px;position:relative}
+.sec-h::before{content:'';position:absolute;left:0;bottom:-1px;width:30px;height:2px;
+  background:var(--red);box-shadow:0 0 8px rgba(255,43,43,.55)}
+.card-b > .sec-h:first-child{margin-top:0}
+
+.rv{color:var(--txt);word-break:break-word}
+.rv.dim,.dim{color:var(--txt-3)}
+.err{color:var(--red-2);font-size:12px}
+.note{margin-top:14px;padding-top:10px;border-top:1px solid var(--line);
+  font-size:10.5px;line-height:1.6;color:var(--txt-3)}
+
+dl.kv{margin:0;display:grid;grid-template-columns:minmax(120px,180px) 1fr;
+  gap:5px 14px;align-items:start}
+dl.kv dt{font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--txt-3);padding-top:1px}
+dl.kv dd{margin:0;min-width:0;word-break:break-word}
+dl.kv.tight{grid-template-columns:minmax(80px,120px) 1fr;font-size:11.5px;gap:3px 10px}
+
+/* tables: the primary result format. Records get one row each with a header
+   row; key/value payloads get a two-column layout with the key as a row header. */
+.tbl{width:100%;border-collapse:collapse;margin:2px 0 4px;font-size:11.5px}
+.tbl th,.tbl td{text-align:left;vertical-align:top;padding:6px 10px 6px 0;
+  border-bottom:1px solid var(--line)}
+/* Column and row labels sit a clear step below a .sec-h: smaller, normal
+   weight, and the dimmest text in the table, so they never compete with the
+   section title above them. */
+.tbl thead th{font-size:9px;font-weight:400;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--txt-4);white-space:nowrap;
+  border-bottom-color:var(--line);padding-bottom:5px}
+.tbl tbody tr:last-child th,.tbl tbody tr:last-child td{border-bottom:0}
+.tbl tbody tr:hover{background:rgba(255,255,255,.022)}
+.tbl td{color:var(--txt-2);word-break:break-word}
+/* URLs are the payload here; give them the room and keep them unbroken. */
+.tbl td:nth-child(2),.tbl.kv2 td{font-size:11.5px}
+.tbl.kv2 th{width:min(38%,200px);font-size:9.5px;font-weight:400;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--txt-4);white-space:nowrap}
+.tbl.kv2 td{width:62%;color:var(--txt)}
+.tbl-wrap{overflow-x:auto;margin:2px -4px;padding:0 4px}
+.tbl-wrap .tbl{min-width:min(100%,520px)}
+ul.lst.tight{margin:0;padding-left:14px}
+ul.lst.tight li{margin:1px 0;font-size:11.5px}
+
+ul.lst{margin:0;padding-left:16px}
+ul.lst li{margin:2px 0}
+ul.lst .kv{grid-template-columns:minmax(90px,130px) 1fr;font-size:11.5px}
+
+.chips{display:flex;flex-wrap:wrap;gap:5px}
+.chip{font-size:10.5px;padding:2px 7px;border:1px solid var(--line-2);
+  border-radius:var(--r);color:var(--txt-2);background:var(--bg-2);
+  word-break:break-all}
+
+/* CVE blocks — severity drives the left rule and the ID colour */
+.cve{border-left:2px solid var(--line-2);padding:8px 0 8px 11px;margin:9px 0}
+.cve.red{border-left-color:var(--red)}
+.cve.yellow{border-left-color:#e0b341}
+.cve-h{display:flex;flex-wrap:wrap;align-items:baseline;gap:9px}
+.cve-id{font-weight:700;letter-spacing:.05em}
+.cve.red .cve-id{color:var(--red-2)}
+.cve-sev{font-size:10px;letter-spacing:.14em;color:var(--txt-2)}
+.cve-p{font-size:10.5px;color:var(--txt-3)}
+.cve-a{margin-top:4px;font-size:10.5px;color:#e0b341}
+.cve-d{margin-top:5px;font-size:11.5px;color:var(--txt-2);line-height:1.55}
+.cve-r{margin-top:3px;font-size:10.5px;color:var(--txt-3);word-break:break-all}
+
+/* module options */
+.opt{display:flex;align-items:center;gap:8px;margin-top:12px;
+  font-size:11.5px;color:var(--txt-2);cursor:pointer}
+.opt input{accent-color:var(--red);width:13px;height:13px;cursor:pointer}
+/* The native <select> renders as an OS widget: on macOS the popup ignores the
+   page's palette entirely and draws its own light panel with a filled selection
+   block, which is what appeared as a black box over the dark UI. appearance:none
+   hands the control back to the page, and the arrow is redrawn because that also
+   removes the native one. */
+/* position only — deliberately no `display`. This element is also .inwrap, and
+   overriding its `display:flex` here left the select a shrink-to-fit inline-block
+   in a block row: 124px of a 522px field, so only the text itself was clickable. */
+.selwrap{position:relative}
+.selwrap::after{content:'';position:absolute;right:2px;top:50%;pointer-events:none;
+  width:6px;height:6px;margin-top:-4px;border-right:1.5px solid var(--txt-2);
+  border-bottom:1.5px solid var(--txt-2);transform:rotate(45deg)}
+.selwrap:hover::after{border-color:var(--txt)}
+select{appearance:none;-webkit-appearance:none;-moz-appearance:none;
+  background:transparent;border:0;color:var(--txt);font:inherit;font-size:13px;
+  padding:0 22px 0 0;cursor:pointer;line-height:1.5;
+  /* flex:1 + min-width:0, not width:100%. As a flex child, width:100% resolves
+     against the whole row and pushed the leading icon onto its own line. */
+  flex:1;min-width:0;width:auto}
+select:focus{outline:none}
+select:focus-visible{color:var(--txt)}
+/* Explicit colours on every option state: without this the popup falls back to
+   the system background on some platforms even with appearance:none. */
+option,select option{background:var(--bg-2);color:var(--txt);font-size:13px;
+  padding:6px 8px}
+option:checked{background:var(--bg-2);color:var(--txt);font-weight:500}
+option:disabled{color:var(--txt-4)}
+
+@media(max-width:900px){
+  .app{grid-template-columns:1fr}
+  .sidebar{display:none}
+  .stage{padding:30px 18px 44px}
+  dl.kv,dl.kv.tight{grid-template-columns:1fr}
+  dl.kv dt{padding-top:6px}
+  .tbl th,.tbl td{padding-right:6px}
+  .tbl.kv2 th{width:auto;white-space:normal}
+}
+</style>
+</head>
+<body>
+<div class="vignette"></div>
+
+<!-- ============ ICON SPRITE ============ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+      <circle cx="12" cy="8" r="3.6"/><path d="M4.5 20.5c0-4.1 3.4-6.5 7.5-6.5s7.5 2.4 7.5 6.5"/>
+    </symbol>
+    <symbol id="i-mail" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+      <rect x="2.5" y="5" width="19" height="14"/><path d="M2.8 6.2 12 13l9.2-6.8"/>
+    </symbol>
+    <symbol id="i-phone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+      <path d="M6.2 3h3l1.6 4-2 1.4a12 12 0 0 0 5.8 5.8l1.4-2 4 1.6v3c0 1.1-.9 2-2 2C11 18.8 5.2 13 5.2 5c0-1.1.4-2 1-2Z"/>
+    </symbol>
+    <symbol id="i-meta" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/>
+      <path d="M8.5 13h7M8.5 16.5h4.5"/>
+    </symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5Z"/><path d="M17 3v3.5M15.2 4.8h3.6"/>
+    </symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+      <path d="M13.5 2 4 13.5h6L10 22l9.5-11.5h-6L13.5 2Z"/>
+    </symbol>
+    <symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+      <path d="M10 13.5a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.5 1.5"/>
+      <path d="M14 10.5a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.5-1.5"/>
+    </symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+      <circle cx="12" cy="12" r="9"/><path d="M3 12h18"/>
+      <path d="M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18Z"/>
+    </symbol>
+    <symbol id="i-net" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+      <rect x="9" y="2.5" width="6" height="6" rx="1"/>
+      <rect x="2" y="15.5" width="6" height="6" rx="1"/>
+      <rect x="16" y="15.5" width="6" height="6" rx="1"/>
+      <path d="M12 8.5v4M5 15.5v-3h14v3"/>
+    </symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+      <path d="M12 2.5 4.5 5.5v6c0 4.6 3.1 8.4 7.5 10 4.4-1.6 7.5-5.4 7.5-10v-6L12 2.5Z"/>
+      <path d="M9 12.2l2.1 2.1L15.4 10"/>
+    </symbol>
+  </defs>
+</svg>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="mk"></div>
+      <div class="nm">SPY<i>GLASS</i></div>
+    </div>
+    <nav class="nav">
+      <div class="nav-grp"><span class="lbl">Modules</span></div>
+      <div id="navModules"></div>
+    </nav>
+  </aside>
+
+  <main class="main">
+    <div class="scroll">
+      <div class="stage">
+        <div class="col" id="view"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+/* ============================================================
+   UTIL
+   ============================================================ */
+const $  = (s,r=document)=>r.querySelector(s);
+const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
+const ic = id => `<svg class="ic"><use href="#i-${id}"/></svg>`;
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+/* ============================================================
+   MODULE REGISTRY
+   ------------------------------------------------------------
+   Fetched from /api/modules, which reads modules.py. Nothing here
+   hardcodes a module list, so a tab cannot exist for a module that
+   is not in the CLI.
+   ============================================================ */
+let MODULES = [];
+let BY_ID = {};
+/* Module id -> {resultKey: humanLabel}, from /api/modules. Modules return
+   internal bucket keys, and prettifying those client-side invents wording that
+   then disagrees with the CLI — the server's map is the only source. */
+let LABELS = {};
+
+const curId = () => (location.hash || '').slice(1);
+
+function sectionTitle(moduleId, key){
+  return (LABELS[moduleId] && LABELS[moduleId][key]) || key.replace(/_/g, ' ');
+}
+
+/* ============================================================
+   SIDEBAR
+   ============================================================ */
+function paintNav(){
+  $('#navModules').innerHTML = MODULES.map(m => `
+  <div class="nav-i" data-id="${m.id}">
+    <span class="ix">${esc(m.ix)}</span>
+    <svg class="ic"><use href="#i-${m.icon}"/></svg>
+    <span class="tx">${esc(m.name)}</span>
+  </div>`).join('');
+  $$('.nav-i').forEach(a => a.addEventListener('click', () => {
+    location.hash = a.dataset.id;
+  }));
+}
+
+/* ============================================================
+   INPUT SHELL
+   ============================================================ */
+const field = f => {
+  const id = `f-${f.name}`;
+  if (f.type === 'select'){
+    return `
+    <div class="field">
+      <span class="lbl">${esc(f.label)}</span>
+      <div class="inwrap selwrap">
+        ${f.icon ? ic(f.icon) : ''}
+        <select id="${id}" data-field="${esc(f.name)}"${f.required ? ' data-required="1"' : ''}>
+          ${f.placeholder
+            ? `<option value="" disabled selected>${esc(f.placeholder)}</option>` : ''}
+          ${(f.options || []).map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('')}
+        </select>
+      </div>
+    </div>`;
+  }
+  return `
+  <div class="field">
+    <span class="lbl">${esc(f.label)}</span>
+    <div class="inwrap">
+      ${f.icon ? ic(f.icon) : ''}
+      ${f.pfx ? `<span class="pfx">${esc(f.pfx)}</span>` : ''}
+      <input id="${id}" data-field="${esc(f.name)}" spellcheck="false"
+             placeholder="${esc(f.ph || '')}" />
+    </div>
+  </div>`;
+};
+
+const optRow = o => o.type === 'checkbox'
+  ? `<label class="opt"><input type="checkbox" data-opt="${esc(o.name)}"
+       ${o.default ? 'checked' : ''} /><span>${esc(o.label)}</span></label>`
+  : `<div class="field">
+       <span class="lbl">${esc(o.label)}</span>
+       <div class="inwrap">
+         <input type="number" data-opt="${esc(o.name)}" value="${esc(o.default)}"
+                min="${esc(o.min)}" max="${esc(o.max)}" />
+       </div>
+     </div>`;
+
+function shell(m){
+  const fields = m.fields || [];
+  return `
+  <div class="page-h">
+    <h1><span class="sq"></span>${esc(m.name)}</h1>
+    <div class="sub">${esc(m.sub)}</div>
+  </div>
+
+  <div class="card">
+    <div class="card-b">
+      ${fields.map(field).join('')}
+      ${(m.options || []).map(optRow).join('')}
+      <div class="btnrow">
+        <button class="btn" data-scan>${ic('bolt')}Run ${esc(m.name)}</button>
+      </div>
+      <div id="scanState" class="scan hide">
+        <div class="lbl" id="scanLbl" style="letter-spacing:.14em">Dispatching…</div>
+        <div class="bar"><i id="scanBar"></i></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="result"></div>
+`;
+}
+
+/* ============================================================
+   RESULT RENDERING
+   ------------------------------------------------------------
+   A generic walker rather than a per-module renderer. Every module
+   already returns the same nested dict shape, so one renderer covers
+   all of them and a new module needs no frontend work.
+   ============================================================ */
+const SEV = { CRITICAL:'red', HIGH:'red', MEDIUM:'yellow', LOW:'dim' };
+
+function isScalar(v){
+  return v === null || ['string','number','boolean'].includes(typeof v);
+}
+
+/* Uniform arrays of objects are the common case in a recon payload — match
+   lists, subdomains, ports, backlinks — and they are unreadable stacked as
+   key/value blocks. They get a real table with one row per record instead. */
+const COLUMN_ORDER = ['domain','url','title','name','host','ip','port','status',
+                      'similarity','score','severity','version','date','source'];
+
+function columnsFor(keys){
+  const known = COLUMN_ORDER.filter(k => keys.includes(k));
+  const rest = keys.filter(k => !known.includes(k));
+  return [...known, ...rest];
+}
+
+function cell(v){
+  if (isScalar(v)) return `<td>${esc(v)}</td>`;
+  if (Array.isArray(v)){
+    if (!v.length) return `<td class="dim">none</td>`;
+    if (v.every(isScalar)) return `<td>${v.map(esc).join(', ')}</td>`;
+    return `<td><ul class="lst tight">${v.map(renderNode).join('')}</ul></td>`;
+  }
+  const keys = Object.keys(v);
+  if (!keys.length) return `<td class="dim">none</td>`;
+  if (keys.length === 1 && keys[0] === 'cves') return `<td>${renderVulns(v)}</td>`;
+  return `<td><dl class="kv tight">${keys.map(k =>
+    `<dt>${esc(k.replace(/_/g,' '))}</dt><dd>${renderValue(v[k])}</dd>`).join('')}</dl></td>`;
+}
+
+function table(cols, rows){
+  return `<table class="tbl">
+    <thead><tr>${cols.map(c => `<th>${esc(c.replace(/_/g,' '))}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(r => `<tr>${cols.map(c => cell(r[c])).join('')}</tr>`).join('')}</tbody>
+  </table>`;
+}
+
+function objectTable(obj){
+  const keys = Object.keys(obj);
+  return `<table class="tbl kv2">
+    <tbody>${keys.map(k => `<tr><th>${esc(k.replace(/_/g,' '))}</th>
+      <td>${renderValue(obj[k])}</td></tr>`).join('')}</tbody></table>`;
+}
+
+function renderValue(v){
+  if (isScalar(v)) return `<span class="rv">${esc(v)}</span>`;
+  if (Array.isArray(v)){
+    if (!v.length) return `<span class="rv dim">none</span>`;
+    // A flat list of records becomes a table.
+    if (v.every(x => x && typeof x === 'object' && !Array.isArray(x))){
+      const keys = [...new Set(v.flatMap(x => Object.keys(x)))];
+      if (keys.length){
+        // Long record sets scroll horizontally rather than stretching the page.
+        const body = table(columnsFor(keys), v);
+        return v.length > 12 ? `<div class="tbl-wrap">${body}</div>` : body;
+      }
+    }
+    // A flat list of scalars — open ports, subdomains, CSP domains — is always
+    // chips. A one-column "value" table is never useful, however long the list:
+    // five open ports should not occupy five rows.
+    if (v.every(isScalar)){
+      return `<div class="chips">${v.map(x => `<span class="chip">${esc(x)}</span>`).join('')}</div>`;
+    }
+    return `<ul class="lst tight">${v.map(x =>
+      `<li>${isScalar(x) ? esc(x) : renderNode(x)}</li>`).join('')}</ul>`;
+  }
+  return objectTable(v);
+}
+
+function renderCve(c){
+  const sev = (c.severity || '').toUpperCase();
+  const cls = SEV[sev] || '';
+  return `<div class="cve ${cls}">
+    <div class="cve-h">
+      <span class="cve-id">${esc(c.id)}</span>
+      <span class="cve-sev">${esc(sev || 'UNRATED')}${c.score != null ? ' ' + c.score : ''}</span>
+      <span class="cve-p">${esc(c.product || '')} ${esc(c.version || '')}</span>
+    </div>
+    ${(c.affected || []).length
+      ? `<div class="cve-a">affected: ${esc(c.affected.join('; '))}</div>` : ''}
+    ${c.description ? `<div class="cve-d">${esc(c.description)}</div>` : ''}
+    ${(c.references || []).slice(0,3).map(u =>
+      `<div class="cve-r">${esc(u)}</div>`).join('')}
+  </div>`;
+}
+
+function renderNode(v){
+  // Reached from inside a table cell; a record nested in a cell keeps its own
+  // key/value table rather than a bare <li>, which would be invalid markup.
+  if (isScalar(v)) return `<span class="rv">${esc(v)}</span>`;
+  if (Array.isArray(v)){
+    if (!v.length) return `<span class="rv dim">none</span>`;
+    if (v.every(x => x && typeof x === 'object' && !Array.isArray(x))){
+      const keys = [...new Set(v.flatMap(x => Object.keys(x)))];
+      if (keys.length) return table(columnsFor(keys), v);
+    }
+    if (v.every(isScalar)){
+      return `<div class="chips">${v.map(x => `<span class="chip">${esc(x)}</span>`).join('')}</div>`;
+    }
+    return `<ul class="lst tight">${v.map(x =>
+      `<li>${isScalar(x) ? esc(x) : renderNode(x)}</li>`).join('')}</ul>`;
+  }
+  return objectTable(v);
+}
+
+
+function renderVulns(v){
+  const cves = v.cves || [];
+  const head = `<div class="card"><div class="card-b">
+    <div class="sec-h">Known vulnerabilities
+      <span class="dim">${cves.length} CVE${cves.length === 1 ? '' : 's'}</span></div>`;
+  if (!cves.length){
+    return head + `<div class="rv dim">No known CVEs for the versions detected.</div>
+      </div></div>`;
+  }
+  const skipped = (v.skipped || []).length
+    ? `<div class="rv dim">Not queried (cap reached): ${esc(v.skipped.join(', '))}</div>` : '';
+  return head + cves.map(renderCve).join('') + skipped + `
+    <div class="note">Affected ranges are NVD's structured data. Advisory prose
+      keeps its original wording after a range is widened, so trust the range.</div>
+    </div></div>`;
+}
+
+function renderResult(data, moduleId){
+  if (data.error){
+    return `<div class="card"><div class="card-b">
+      <div class="err">${esc(data.error)}</div></div></div>`;
+  }
+  // Top-level scalars are collected into one Overview block. Giving each its own
+  // ruled section header turned a five-field result into five separate headings.
+  const scalars = [];
+  const blocks = [];
+  for (const [k, v] of Object.entries(data)){
+    if (k.startsWith('_') || v === null || v === undefined) continue;
+    if (k === 'inputs') continue;
+    if (isScalar(v)){ scalars.push([k, v]); continue; }
+    if (k === 'vulns'){ blocks.push(renderVulns(v)); continue; }
+    const body = renderValue(v);
+    const stripped = body.replace(/<[^>]+>/g,'').trim();
+    if (!stripped || stripped === 'none') continue;
+    blocks.push(`<div class="sec-h">${esc(sectionTitle(moduleId, k))}</div>${body}`);
+  }
+  const head = scalars.length
+    ? `<div class="sec-h">Overview</div>${objectTable(Object.fromEntries(scalars))}`
+    : '';
+  return `<div class="card"><div class="card-b">${head}${blocks.join('')}</div></div>`;
+}
+
+/* ============================================================
+   ROUTER
+   ============================================================ */
+function render(){
+  const m = BY_ID[curId()] || MODULES[0];
+  if (!m) return;
+  $$('.nav-i').forEach(a => a.classList.toggle('act', a.dataset.id === m.id));
+  const v = $('#view');
+  v.innerHTML = shell(m);
+  v.style.animation = 'none'; void v.offsetWidth; v.style.animation = '';
+  $('.scroll').scrollTop = 0;
+  wire(m);
+}
+
+function collect(m){
+  const payload = {};
+  for (const f of (m.fields || [])){
+    const el = $(`[data-field="${f.name}"]`, $('#view'));
+    if (!el) continue;
+    const val = (el.value || '').trim();
+    if (val) payload[f.name] = val;
+  }
+  for (const o of (m.options || [])){
+    const el = $(`[data-opt="${o.name}"]`, $('#view'));
+    if (!el) continue;
+    payload[o.name] = o.type === 'checkbox' ? el.checked : Number(el.value);
+  }
+  return payload;
+}
+
+function wire(m){
+  const view = $('#view');
+  const btn = $('[data-scan]', view);
+  btn.addEventListener('click', () => run(m, btn));
+  $$('input', view).forEach(inp => inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') run(m, btn);
+  }));
+  // The select fills the row, but the leading icon and the field padding are
+  // still dead space. Forward those clicks to the control so the whole field
+  // opens the dropdown, which is what every other input in the form does.
+  $$('.selwrap', view).forEach(wrap => {
+    const sel = $('select', wrap);
+    if (!sel) return;
+    wrap.addEventListener('click', e => {
+      if (e.target === sel) return;
+      // showPicker() is the spec'd way to open a <select> programmatically;
+      // click() is the fallback where it is missing.
+      if (typeof sel.showPicker === 'function') {
+        try { sel.showPicker(); return; } catch (_) { /* fall through */ }
+      }
+      sel.click();
+    });
+  });
+}
+
+function setScan(on, label){
+  const st = $('#scanState'), bar = $('#scanBar'), lbl = $('#scanLbl');
+  if (!st) return;
+  st.classList.toggle('hide', !on);
+  if (on){
+    bar.style.width = '8%';
+    lbl.textContent = label;
+  } else {
+    bar.style.width = '0%';
+  }
+}
+
+/* A recon pass is a real HTTP request that can take a minute or more, so the
+   bar is an indeterminate crawl rather than a fake percentage. */
+let crawl = null;
+function startCrawl(){
+  const bar = $('#scanBar');
+  let p = 8;
+  crawl = setInterval(() => {
+    p = Math.min(92, p + Math.random() * 7);
+    if (bar) bar.style.width = p + '%';
+  }, 260);
+}
+function stopCrawl(){ if (crawl){ clearInterval(crawl); crawl = null; } }
+
+async function run(m, btn){
+  const payload = collect(m);
+  // A required field left on its placeholder is a refusal to run, not a reason
+  // to guess. Guessing here is what produced results attributed to the wrong
+  // corpus without the operator noticing.
+  const missing = (m.fields || []).filter(f => f.required && !payload[f.name]);
+  if (missing.length){
+    $('#result').innerHTML = `<div class="card"><div class="card-b">
+      <div class="err">Choose a value for: ${esc(missing.map(f => f.label).join(', '))}</div>
+      </div></div>`;
+    return;
+  }
+  const empty = !Object.keys(payload).length;
+  if (empty && !m.no_input){
+    $('#result').innerHTML =
+      `<div class="card"><div class="card-b"><div class="err">Enter a value first.</div></div></div>`;
+    return;
+  }
+
+  const old = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `${ic('bolt')}Running…`;
+  setScan(true, `Dispatching ${m.name.toLowerCase()}…`);
+  startCrawl();
+  $('#result').innerHTML = '';
+
+  const t0 = performance.now();
+  try {
+    const res = await fetch(`/api/${m.endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    stopCrawl();
+    setScan(false);
+    if (!res.ok && !data.error) data.error = `HTTP ${res.status}`;
+    $('#result').innerHTML =
+      `<div class="run-meta">${esc(m.name)} · ${secs}s · HTTP ${res.status}</div>`
+      + renderResult(data, m.id);
+  } catch (err){
+    stopCrawl();
+    setScan(false);
+    $('#result').innerHTML = `<div class="card"><div class="card-b">
+      <div class="err">Request failed: ${esc(err.message)}</div></div></div>`;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = old;
+  }
+}
+
+/* ============================================================
+   BOOT
+   ============================================================ */
+(async function boot(){
+  try {
+    const res = await fetch('/api/modules');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const payload = await res.json();
+    // Tolerate a bare array so an older server still renders.
+    MODULES = Array.isArray(payload) ? payload : payload.modules;
+    LABELS = Array.isArray(payload) ? {} : (payload.labels || {});
+  } catch (err){
+    $('#view').innerHTML = `<div class="card"><div class="card-b">
+      <div class="err">Could not load the module registry: ${esc(err.message)}</div>
+      <div class="note">Is the server running? <code>python webapp.py</code></div>
+    </div></div>`;
+    return;
+  }
+  BY_ID = Object.fromEntries(MODULES.map(m => [m.id, m]));
+  if (!location.hash && MODULES.length) location.hash = MODULES[0].id;
+  paintNav();
+  window.addEventListener('hashchange', render);
+  render();
+})();
+</script>
+</body>
+</html>
