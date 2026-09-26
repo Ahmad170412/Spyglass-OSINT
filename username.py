@@ -13,6 +13,21 @@ from .utils import _run, _domain, _verify, _pick, _check_tool, _tool_failed, \
 from . import utils
 from .breach import check as _breach_check
 
+# How many of maigret's 6,206 sites to check. Its own database is far larger
+# than anything worth waiting for, so this is a time/coverage trade rather
+# than a limit of the tool. Measured on a real handle, unique domains found:
+#
+#   --top-sites   50 ->    4.8s,  6 domains     (previous default)
+#   --top-sites  200 ->   12.2s,  7 domains
+#   --top-sites  500 ->   15.2s, 12 domains
+#   --top-sites 1000 ->   27.0s, 16 domains     (chosen: +22s for +10 domains)
+#   --top-sites 3000 ->   58.0s, 24 domains
+#
+# 1000 costs about 10% of a full four-engine search and roughly triples the
+# domains maigret contributes. Past that the returns per second fall away, and
+# sherlock's 198s dominates the wall clock regardless.
+_MG_SITES = 1000
+
 
 # ─── tool runners ─────────────────────────────────────────
 
@@ -58,24 +73,17 @@ def _sherlock(username):
     return out
 
 
-def _maigret(username):
-    if not _check_tool("maigret", _MG):
-        return {}
-    try:
-        r = subprocess.run(
-            [_MG, username, "--no-progressbar", "-C", "--top-sites", "50"],
-            capture_output=True, text=True, timeout=300,
-            env=_proxy_env(),
-        )
-    except Exception:
-        return {}
-    _tool_failed("maigret", r)
+def _maigret_stdout_urls(r):
+    """Profile URLs scraped from maigret's stdout, used only as a fallback.
+
+    maigret's JSON report is the better source because it carries the
+    extracted fields as well as the URL, but it is a report file and a
+    report file can be missing. Without this, a maigret build that writes no
+    report would look like a handle with no accounts rather than a tool that
+    half-worked.
+    """
     out = {}
-    # maigret prints a result line per site, then indented "key: value" lines of
-    # extracted data. That data is the most valuable thing it produces — a
-    # YouTube hit came back with the channel id, real name, bio and avatar URL —
-    # and it was all being thrown away in favour of the bare profile link.
-    for line in r.stdout.split("\n"):
+    for line in (r.stdout or "").split("\n"):
         if not line.startswith("[+] "):
             continue
         if line.startswith(("[+] MAIGRET", "[+] Using", "[+] Donate")):
@@ -85,38 +93,39 @@ def _maigret(username):
             continue
         url = m.group(1).rstrip(".,")
         domain = _domain(url)
-        if domain in out:
-            continue
-        out[domain] = url
+        if domain and domain not in out:
+            out[domain] = url
     return out
 
 
-def _maigret_details(username, timeout=300):
-    """maigret's extracted per-site data, keyed by domain.
+def _maigret(username, top_sites=_MG_SITES, timeout=420):
+    """maigret's profile URLs and the data it extracted, in one pass.
 
-    A separate pass because maigret's JSON report is the only place its
-    structured output appears, and that data is the most valuable thing it
-    produces — a YouTube hit carries the channel id, real name, bio and avatar
-    URL, none of which survive being reduced to a bare profile link.
+    Returns ``(hits, details)``. One run, not two: the ndjson report carries
+    both the URL and the structured fields behind it, so parsing the report
+    yields hits and details that are guaranteed to describe the same search.
+    Running maigret once for URLs and again for the report doubled the wall
+    clock and risked the two passes disagreeing.
 
-    maigret writes reports into ``./reports`` unless told otherwise, so the
-    output is directed at a throwaway directory and removed afterwards. Left
-    alone it scatters CSV and JSON dossiers of every search into the working
-    directory, unencrypted.
+    maigret writes reports into ``./reports`` unless told otherwise, so output
+    is directed at a throwaway directory and removed afterwards. Left alone it
+    scatters CSV and JSON dossiers of every search into the working directory,
+    unencrypted.
     """
     if not _check_tool("maigret", _MG):
-        return {}
+        return {}, {}
     tmp = tempfile.mkdtemp(prefix="spyglass-maigret-")
     try:
         try:
             r = subprocess.run(
-                [_MG, username, "--no-progressbar", "--top-sites", "50",
-                 "--folderoutput", tmp, "-J", "ndjson"],
+                [_MG, username, "--no-progressbar", "-C",
+                 "--top-sites", str(top_sites), "--folderoutput", tmp,
+                 "-J", "ndjson"],
                 capture_output=True, text=True, timeout=timeout,
                 env=_proxy_env(),
             )
         except Exception:
-            return {}
+            return {}, {}
         _tool_failed("maigret", r)
 
         payload = None
@@ -126,15 +135,14 @@ def _maigret_details(username, timeout=300):
             try:
                 with open(os.path.join(tmp, name), encoding="utf-8") as fh:
                     # ndjson: one JSON record per line, one line per hit.
-                    records = [json.loads(l) for l in fh if l.strip()]
-                payload = records
+                    payload = [json.loads(l) for l in fh if l.strip()]
                 break
             except Exception:
                 continue
         if not isinstance(payload, list):
-            return {}
+            return _maigret_stdout_urls(r), {}
 
-        out = {}
+        hits, details = {}, {}
         for rec in payload:
             if not isinstance(rec, dict):
                 continue
@@ -147,14 +155,19 @@ def _maigret_details(username, timeout=300):
                 continue
             url = status.get("url") or rec.get("url_user") or ""
             domain = _domain(url) if url else (rec.get("sitename") or "")
+            if domain and domain not in hits:
+                # A claimed record with a URL is a hit even when it carries no
+                # extractable fields, so the two maps are built independently.
+                hits[domain] = url.rstrip(".,")
             ids = status.get("ids")
             if not isinstance(ids, dict) or not domain:
                 continue
+            # The extractor name is an implementation detail, not intelligence.
             entry = {k: v for k, v in ids.items()
                      if not k.startswith("_") and v not in (None, "")}
             if entry:
-                out[domain] = entry
-        return out
+                details[domain] = entry
+        return hits, details
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -207,13 +220,11 @@ def username(target):
         m_fut  = pool.submit(_maigret, target)
         bb_fut = pool.submit(_blackbird_username, target)
         br_fut = pool.submit(_breach_check, target, "login")
-        mg_fut = pool.submit(_maigret_details, target)
         u  = u_fut.result()
         s  = s_fut.result()
-        m  = m_fut.result()
+        m, mgd = m_fut.result()
         bb = bb_fut.result()
         br = br_fut.result()
-        mgd = mg_fut.result()
 
     all_raw = {**u, **s, **m, **bb}
     rejected = {}

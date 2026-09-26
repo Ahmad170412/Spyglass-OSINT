@@ -29,7 +29,7 @@ class RunnerGracefulTest(unittest.TestCase):
     def test_maigret_error_returns_empty(self):
         with mock.patch.object(uname, "_check_tool", return_value=True), \
              mock.patch.object(uname.subprocess, "run", side_effect=OSError("boom")):
-            self.assertEqual(uname._maigret("x"), {})
+            self.assertEqual(uname._maigret("x"), ({}, {}))
 
     def test_user_scanner_timeout_returns_empty(self):
         with mock.patch.object(uname, "_check_tool", return_value=True), \
@@ -101,8 +101,8 @@ class _Completed:
         self.returncode = 0
 
 
-class MaigretDetailsTest(unittest.TestCase):
-    """maigret's nested status.ids payload — the richest output in the toolchain."""
+class MaigretReportTest(unittest.TestCase):
+    """maigret's ndjson report: profile URLs and extracted data in one pass."""
 
     RECORD = [{
         "sitename": "YouTube",
@@ -116,45 +116,64 @@ class MaigretDetailsTest(unittest.TestCase):
         },
     }]
 
-    def _run_with(self, records):
-        """Run _maigret_details against a stubbed maigret that writes `records`."""
+    def _run_with(self, records, stdout="", write_report=True):
+        """Run _maigret against a stubbed maigret that writes `records`."""
         real = tempfile.mkdtemp(prefix="sg-test-")
-        with open(os.path.join(real, "report_ndjson.json"), "w") as fh:
-            fh.write("\n".join(json.dumps(r) for r in records))
+        if write_report:
+            with open(os.path.join(real, "report_ndjson.json"), "w") as fh:
+                fh.write("\n".join(json.dumps(r) for r in records))
         try:
             with mock.patch.object(un, "_MG", "/usr/bin/maigret"), \
                  mock.patch.object(un.subprocess, "run",
-                                   return_value=_Completed("")), \
+                                   return_value=_Completed(stdout)), \
                  mock.patch.object(un.tempfile, "mkdtemp", return_value=real), \
                  mock.patch.object(un.shutil, "rmtree"):
-                return un._maigret_details("qrxznat")
+                return un._maigret("qrxznat")
         finally:
             shutil.rmtree(real, ignore_errors=True)
 
-    def test_claimed_records_yield_usable_data(self):
-        out = self._run_with(self.RECORD)
-        self.assertIn("youtube.com", out)
-        self.assertEqual(out["youtube.com"]["fullname"], "Nat")
-        self.assertEqual(out["youtube.com"]["youtube_channel_id"], "UCHVFC")
-        self.assertEqual(out["youtube.com"]["bio"], "haechan 90s")
+    def test_claimed_record_yields_both_a_hit_and_its_data(self):
+        hits, details = self._run_with(self.RECORD)
+        self.assertEqual(hits, {"youtube.com": "https://www.youtube.com/@qrxznat/about"})
+        self.assertEqual(details["youtube.com"]["fullname"], "Nat")
+        self.assertEqual(details["youtube.com"]["youtube_channel_id"], "UCHVFC")
+        self.assertEqual(details["youtube.com"]["bio"], "haechan 90s")
         # The extractor name is an implementation detail, not intelligence.
-        self.assertNotIn("_extractor", out["youtube.com"])
+        self.assertNotIn("_extractor", details["youtube.com"])
 
     def test_unclaimed_records_are_ignored(self):
-        out = self._run_with([{"status": {"status": "Unclaimed",
-                                          "url": "https://x.com/u",
-                                          "ids": {"fullname": "nobody"}}}])
-        self.assertEqual(out, {})
+        hits, details = self._run_with([{"status": {"status": "Unclaimed",
+                                                   "url": "https://x.com/u",
+                                                   "ids": {"fullname": "nobody"}}}])
+        self.assertEqual((hits, details), ({}, {}))
 
-    def test_record_without_ids_yields_nothing(self):
-        self.assertEqual(self._run_with([{"status": {"status": "Claimed",
-                                                     "url": "https://x.com/u"}}]), {})
+    def test_claimed_record_with_no_ids_is_still_a_hit(self):
+        # A hit with nothing extractable is still a hit; the two maps are
+        # built independently so a sparse record is not dropped entirely.
+        hits, details = self._run_with([{"status": {"status": "Claimed",
+                                                   "url": "https://x.com/u"}}])
+        self.assertEqual(hits, {"x.com": "https://x.com/u"})
+        self.assertEqual(details, {})
+
+    def test_falls_back_to_stdout_when_no_report_is_written(self):
+        # A maigret build that writes no report must not read as "no accounts".
+        stdout = ("[+] MAIGRET v1.0\n"
+                  "[+] https://www.youtube.com/@qrxznat\n"
+                  "[+] Donate: https://maigret.io\n")
+        hits, details = self._run_with([], stdout=stdout, write_report=False)
+        self.assertEqual(hits, {"youtube.com": "https://www.youtube.com/@qrxznat"})
+        self.assertEqual(details, {})
 
     def test_temp_output_dir_is_removed_and_cwd_stays_clean(self):
         before = os.path.isdir("reports")
         self._run_with(self.RECORD)
         # maigret writes dossiers into ./reports unless redirected.
         self.assertEqual(os.path.isdir("reports"), before)
+
+    def test_site_cap_is_above_the_previous_fifty(self):
+        # 50 was a 200x restriction on a 6,206-site database; measured at 1000
+        # for +22s and 6 -> 16 unique domains on a real handle.
+        self.assertGreaterEqual(un._MG_SITES, 1000)
 
 
 if __name__ == "__main__":

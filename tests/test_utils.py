@@ -328,3 +328,44 @@ class VerifyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VerifyRetryTest(unittest.TestCase):
+    """A throttled real profile must not be recorded as a missing one."""
+
+    def _verify_with(self, codes):
+        """Feed _verify a scripted sequence of HTTP statuses, one per attempt."""
+        seq = list(codes)
+
+        def fake_run(cmd, **kw):
+            code = seq.pop(0) if seq else 200
+            # A real profile page is well over the body-size floor, and the
+            # handle has to appear more than once to not read as an echo.
+            body = ("<html><title>Nat</title>" + "filler " * 400
+                    + "qrxznat qrxznat</html>") if code == 200 else "busy"
+            done = mock.Mock(stdout=f"{body}\n{code}", stderr="", returncode=0)
+            return done
+
+        with mock.patch.object(utils.subprocess, "run", side_effect=fake_run), \
+             mock.patch.object(utils.time, "sleep"):
+            rej = {}
+            alive = utils._verify({"https://x.com/qrxznat"}, silent=True,
+                               expect="qrxznat", rejections=rej)
+            return alive, rej
+
+    def test_429_then_success_keeps_the_profile(self):
+        alive, rej = self._verify_with([429, 429, 200])
+        self.assertEqual(alive, {"https://x.com/qrxznat"})
+        self.assertEqual(rej, {})
+
+    def test_persistent_429_is_still_rejected(self):
+        alive, rej = self._verify_with([429, 429, 429])
+        self.assertEqual(alive, set())
+        self.assertEqual(list(rej), ["http 429"])
+
+    def test_real_verdicts_are_not_retried(self):
+        # A not-found title is the same on the second request, so only one
+        # request should be made: asking again just costs time.
+        alive, rej = self._verify_with([404])
+        self.assertEqual(alive, set())
+        self.assertEqual(list(rej), ["http 404"])

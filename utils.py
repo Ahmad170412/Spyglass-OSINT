@@ -2,6 +2,7 @@
 import os
 import re
 import json
+import time
 import subprocess
 import concurrent.futures
 from urllib.parse import urlparse
@@ -362,8 +363,17 @@ def _page_is_real(body, code):
     return True, "ok"
 
 
+# Statuses that mean "ask again later", not "this page does not exist".
+# Verification fans 30 requests out at once across every candidate URL, and
+# several of those candidates are usually the same host, which is enough to
+# earn a 429 or a dropped connection from a site we just asked. Treating that
+# as a verdict turns a real profile into a silent absence.
+_TRANSIENT_CODES = {0, 408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 524}
+_RETRY_BACKOFF = 1.5
+
+
 def _verify(urls, max_workers=30, timeout=10, silent=False, fetch_bytes=200_000,
-            expect=None, rejections=None):
+            expect=None, rejections=None, retries=2):
     """Check which URLs actually serve the page they claim to.
 
     A 2xx is not evidence that a profile exists. Single-page apps return their
@@ -411,6 +421,10 @@ def _verify(urls, max_workers=30, timeout=10, silent=False, fetch_bytes=200_000,
     identical to a search that found less — which is exactly the confusion this
     parameter exists to prevent.
 
+    Transient failures (429, 5xx, dropped connections) are retried twice with a
+    linear backoff, because the fan-out above reliably provokes them and a
+    throttled real profile is otherwise indistinguishable from a missing one.
+
     Returns the set of URLs that passed.
     """
 
@@ -426,27 +440,43 @@ def _verify(urls, max_workers=30, timeout=10, silent=False, fetch_bytes=200_000,
     def _check(u):
         # Follow redirects and keep the body: the interesting failures are all
         # 200-with-wrong-content, which a header-only HEAD cannot see.
-        cmd = ["curl", "-sS", "-L", "--max-time", str(timeout), "-A", _UA,
-               "-w", "\n%{http_code}", u]
-        if _PROXY:
-            cmd = cmd[:1] + _proxy_args() + cmd[1:]
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True,
-                               errors="replace", timeout=timeout + 5)
-        except Exception:
-            return u, (False, "request failed")
-        raw = r.stdout or ""
-        if "\n" not in raw[-8:]:
-            return u, (False, "no status returned")
-        body, _, code_s = raw.rpartition("\n")
-        code_s = code_s.strip()
-        if not code_s.isdigit():
-            return u, (False, "bad status")
-        body = body[:fetch_bytes]
-        ok, why = _page_is_real(body, int(code_s))
-        if ok and needle and body.lower().count(needle) < 2:
-            ok, why = False, "search term appears only once (echo)"
-        return u, (ok, why)
+        #
+        # Retried on transient statuses only. A real verdict — a registration
+        # prompt, a not-found title, a body too small — is the same on the
+        # second request, so retrying those would just cost time.
+        last = (False, "request failed")
+        for attempt in range(retries + 1):
+            if attempt:
+                time.sleep(_RETRY_BACKOFF * attempt)
+            cmd = ["curl", "-sS", "-L", "--max-time", str(timeout), "-A", _UA,
+                   "-w", "\n%{http_code}", u]
+            if _PROXY:
+                cmd = cmd[:1] + _proxy_args() + cmd[1:]
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True,
+                                   errors="replace", timeout=timeout + 5)
+            except Exception:
+                last = (False, "request failed")
+                continue
+            raw = r.stdout or ""
+            if "\n" not in raw[-8:]:
+                last = (False, "no status returned")
+                continue
+            body, _, code_s = raw.rpartition("\n")
+            code_s = code_s.strip()
+            if not code_s.isdigit():
+                last = (False, "bad status")
+                continue
+            code = int(code_s)
+            if code in _TRANSIENT_CODES:
+                last = (False, f"http {code}")
+                continue
+            body = body[:fetch_bytes]
+            ok, why = _page_is_real(body, code)
+            if ok and needle and body.lower().count(needle) < 2:
+                ok, why = False, "search term appears only once (echo)"
+            return u, (ok, why)
+        return u, last
 
     valid, reasons = set(), {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:

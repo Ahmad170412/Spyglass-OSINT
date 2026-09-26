@@ -101,6 +101,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **maigret now runs once per search instead of twice.** It was invoked separately to collect
+  profile URLs and again to collect the extracted fields, which doubled its wall clock and risked
+  the two passes describing different searches. The ndjson report carries both, so one run now
+  produces the hits and their data together. The stdout parser is kept as a fallback for maigret
+  builds that write no report, so a half-working tool cannot read as "no accounts found".
+- **`--top-sites 50` was a 200x restriction on a 6,206-site database.** Measured on a live handle,
+  unique domains found: 50 -> 4.8s/6 domains, 200 -> 12.2s/7, 500 -> 15.2s/12, 1000 -> 27.0s/16,
+  3000 -> 58.0s/24. The cap is now 1000, about 10% of a full four-engine search, and it roughly
+  triples maigret's contribution. That change is what surfaced `pscp.tv` and Snapchat's profile
+  metadata on a handle that previously showed neither.
+- **maigret no longer leaks `reports/` into the working directory at all.** The main invocation
+  never had `--folderoutput`; only the details pass did. Writing both to a temp directory covers
+  the main call now, so no search leaves an unencrypted dossier behind.
+- **Verification retries transient failures.** It fans 30 requests out at once across every
+  candidate, and several candidates are usually the same host, which is enough to earn a 429 or a
+  dropped connection. A throttled real profile was being recorded as a missing one — the exact
+  failure this filter exists to prevent. 429, 5xx and dropped connections are now retried twice
+  with a linear backoff. Real verdicts (registration prompt, not-found title, body too small) are
+  not retried, because they come back identical.
 - **The checkout directory name is no longer hardcoded anywhere.** The package name *is* the directory
   name, so a rename previously broke the test suite silently (`Ran 0 tests`) and the `setup.sh`
   launcher outright. `tests/helpers.py`, `tests/test_no_shadowing.py` and `setup.sh` now derive it
