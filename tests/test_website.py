@@ -318,5 +318,81 @@ class PhaseDnsTest(unittest.TestCase):
         self.assertEqual(out["_ips"], {"1.2.3.4"})
 
 
+class CleanSubNamesTest(unittest.TestCase):
+    """subfinder emits certificate-log and archive noise that must not survive."""
+
+    def test_keeps_in_scope_names(self):
+        raw = "a.github.com\nb.github.com\n"
+        self.assertEqual(web._clean_sub_names(raw, "github.com"),
+                         {"a.github.com", "b.github.com"})
+
+    def test_strips_wildcard_prefix(self):
+        self.assertEqual(web._clean_sub_names("*.api.github.com\n", "github.com"),
+                         {"api.github.com"})
+
+    def test_drops_out_of_scope_and_apex(self):
+        raw = "evil.com\ngithub.com\nreal.github.com\n"
+        self.assertEqual(web._clean_sub_names(raw, "github.com"),
+                         {"real.github.com"})
+
+    def test_suffix_match_requires_a_label_boundary(self):
+        # "notgithub.com".endswith("github.com") is True, but it is a different
+        # domain. Reporting it as a github.com subdomain attributes someone
+        # else's host to the target.
+        raw = "notgithub.com\nevilgithub.com\nreal.github.com\n"
+        self.assertEqual(web._clean_sub_names(raw, "github.com"),
+                         {"real.github.com"})
+
+    def test_normalises_case_and_trailing_dot(self):
+        self.assertEqual(web._clean_sub_names("API.GitHub.com.\n", "github.com"),
+                         {"api.github.com"})
+
+    def test_empty_input(self):
+        self.assertEqual(web._clean_sub_names("", "github.com"), set())
+        self.assertEqual(web._clean_sub_names(None, "github.com"), set())
+
+
+class WildCanaryTest(unittest.TestCase):
+    def test_canary_is_under_the_host_and_deterministic(self):
+        a = web._wild_canary("example.com")
+        b = web._wild_canary("example.com")
+        self.assertEqual(a, b)
+        self.assertTrue(a.endswith(".example.com"))
+        self.assertNotEqual(a, web._wild_canary("other.com"))
+
+
+class FilterResolvableTest(unittest.TestCase):
+    """The noise gate. Everything here is offline — _resolves is stubbed."""
+
+    def test_keeps_only_names_that_resolve(self):
+        with mock.patch.object(web, "_resolves", side_effect=lambda n: n.startswith("live")):
+            live, truncated = web._filter_resolvable(
+                {"live1.example.com", "dead1.example.com", "live2.example.com"})
+        self.assertEqual(live, {"live1.example.com", "live2.example.com"})
+        self.assertEqual(truncated, 0)
+
+    def test_empty_input(self):
+        self.assertEqual(web._filter_resolvable(set()), (set(), 0))
+        self.assertEqual(web._filter_resolvable(None), (set(), 0))
+
+    def test_limit_truncates_and_reports_the_remainder(self):
+        names = {f"h{i}.example.com" for i in range(10)}
+        with mock.patch.object(web, "_resolves", return_value=True):
+            live, truncated = web._filter_resolvable(names, limit=4)
+        self.assertEqual(len(live), 4)
+        self.assertEqual(truncated, 6)
+
+    def test_multi_source_names_are_checked_first(self):
+        names = {"a.example.com", "b.example.com", "c.example.com"}
+        seen = {"a.example.com": 1, "b.example.com": 1, "c.example.com": 3}
+        checked = []
+        with mock.patch.object(web, "_resolves",
+                               side_effect=lambda n: checked.append(n) or True):
+            live, _ = web._filter_resolvable(names, seen_count=seen, limit=1)
+        # Only the best-corroborated name is looked up, and it is the one kept.
+        self.assertEqual(checked, ["c.example.com"])
+        self.assertEqual(live, {"c.example.com"})
+
+
 if __name__ == "__main__":
     unittest.main()

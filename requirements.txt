@@ -7,3 +7,6 @@ shodan
 ignorant>=2.0
 rich>=13.0.0
 cryptography>=42.0.0
+
+# Web console (webapp.py) only. The CLI does not need it.
+flask>=3.0.0
