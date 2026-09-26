@@ -92,11 +92,17 @@ def _parse_phoneinfoga_json(data):
                 elif k not in info:
                     info[k] = v
     return info
+
+
+def _ignorant(number):
+    """Ask ignorant which sites have registered this number.
+
+    Derives the country code and local number from phonenumbers instead of
+    guessing from the leading digits: the old loop kept overwriting ``cc``, so
+    +65 8526 0980 became country code "658" with local "585260980".
+    """
     if not _check_tool("ignorant", _IGNORANT):
         return []
-    # Derive the country code and local number from phonenumbers instead of
-    # guessing from the leading digits: the old loop kept overwriting `cc`,
-    # so +65 8526 0980 became country code "658" with local "585260980".
     cc = ""
     local = ""
     try:
