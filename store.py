@@ -127,13 +127,6 @@ def _entities(result, qtype):
         if value and (kind, value) not in out:
             out.append((kind, value))
 
-    if qtype == "investigation":
-        for kind, values in (result.get("entities") or {}).items():
-            singular = kind.rstrip("s") or kind
-            for v in values:
-                add(singular, v)
-        return out
-
     if qtype == "email":
         for key in ("both", "holehe_only", "user_scanner_only", "blackbird_only"):
             for item in result.get(key, []) or []:

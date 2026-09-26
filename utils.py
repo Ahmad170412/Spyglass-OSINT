@@ -93,6 +93,29 @@ def _curl_json(url, timeout=15):
     return None
 
 
+def _curl_status(url, timeout=20, headers=None):
+    """HTTP status for a URL, following redirects. None on failure.
+
+    Used where the status itself is the answer — Gravatar's ``?d=404`` avatar
+    route returns 404 for an address with no avatar, which makes it an existence
+    check that needs no body parsing.
+    """
+    if not _CURL:
+        return None
+    cmd = [_CURL, "-sS", "-L", "-o", os.devnull, "-w", "%{http_code}",
+           "--max-time", str(timeout), "-A", _UA]
+    for h in headers or ():
+        cmd += ["-H", h]
+    cmd = cmd[:1] + _proxy_args() + cmd[1:]
+    cmd.append(url)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+    except Exception:
+        return None
+    out = (r.stdout or "").strip()
+    return int(out) if out.isdigit() else None
+
+
 def _check_tool(name, path):
     if not path:
         from . import display as _ui

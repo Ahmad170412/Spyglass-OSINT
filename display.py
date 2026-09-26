@@ -71,9 +71,8 @@ _GREEN = "#00ff00"
 _MAIN_ITEMS = [
     "[1]  Identity              (email, username, phone, dark web)",
     "[2]  Infrastructure        (website, IP)",
-    "[3]  Full investigation    (correlate everything)",
-    "[4]  Utilities             (OPSEC, metadata, help, clear)",
-    "[5]  Exit",
+    "[3]  Utilities             (OPSEC, metadata, help, clear)",
+    "[4]  Exit",
 ]
 
 _SUB_MENUS = {
@@ -99,7 +98,7 @@ _SUB_MENUS = {
 }
 
 _SUB_LABELS = {
-    "main":     "Select [1-5]",
+    "main":     "Select [1-4]",
     "identity": "Select [1-5]",
     "infra":    "Select [1-3]",
     "utils":    "Select [1-5]",
@@ -154,20 +153,6 @@ def target_prompt(qtype):
         _con_stderr.print(f"[bold {_GREEN}]{label}:[/] ", end="")
     else:
         sys.stderr.write(f"{label}: ")
-    sys.stderr.flush()
-    try:
-        return input().strip()
-    except (EOFError, KeyboardInterrupt):
-        raise
-
-
-def investigation_prompt():
-    if _RICH:
-        _con_stderr.print(f"[bold {_GREEN}]Enter what you know about the target:[/]")
-        _con_stderr.print(f"  email, username, phone, website (comma-sep)", style="dim")
-        _con_stderr.print(f"[bold {_GREEN}]>[/] ", end="")
-    else:
-        sys.stderr.write("Enter what you know (email, username, phone, website):\n> ")
     sys.stderr.flush()
     try:
         return input().strip()
@@ -247,40 +232,121 @@ def blank():
 
 # ─── composite display functions ─────────────────────────
 
+def _trunc(value, limit=54):
+    text = str(value)
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _rejection_note(result, noun="candidates"):
+    """Explain a short result set instead of leaving the drop unexplained.
+
+    Verification discards bot walls, app shells, catch-all routes and pages that
+    never mention the search term. Showing only what survived makes a search that
+    found six and kept one indistinguishable from one that found one.
+    """
+    rejected = result.get("rejected") or {}
+    if not rejected:
+        return
+    total = sum(rejected.values())
+    seen = result.get("candidates")
+    prefix = f"{total} of {seen} {noun}" if seen else f"{total} {noun}"
+    _print(f"\n  Filtered: {prefix} fetched but not real profiles", None, dim=True)
+    for why, n in sorted(rejected.items(), key=lambda kv: -kv[1]):
+        _print(f"      {n:>4}  {why}", None, dim=True)
+
+
 def show_email(r):
     found("Registered on (multi-tool agreement):", r["both"])
     only(f"Only holehe found ({len(r['holehe_only'])}):", r["holehe_only"],
          extract=lambda x: x["domain"])
     only(f"Only user-scanner found ({len(r['user_scanner_only'])}):", r["user_scanner_only"])
     only(f"Only blackbird found ({len(r['blackbird_only'])}):", r["blackbird_only"])
+    _show_gravatar(r.get("gravatar"))
+    _rejection_note(r)
     breach(r.get("breach", {}))
-    if not any(v for k, v in r.items() if k != "breach"):
+    if not any(v for k, v in r.items()
+               if k not in ("breach", "gravatar", "rejected", "candidates")):
         empty("No results found.")
+
+
+def _show_gravatar(gv):
+    """Render the Gravatar block.
+
+    The linked accounts are the point: they are handles on other services that
+    the registration checkers do not return, so they feed straight back into the
+    username module.
+    """
+    if not gv:
+        return
+    if gv.get("status") == "error":
+        section("Gravatar")
+        item_dim(f"  {gv.get('reason', 'lookup failed')}")
+        return
+    if gv.get("status") == "unavailable":
+        section("Gravatar")
+        item_dim(f"  unavailable: {gv.get('reason', 'unknown')}")
+        return
+    if not gv.get("found"):
+        section("Gravatar")
+        item_dim("  No public Gravatar profile for this address")
+        return
+
+    section("Gravatar — public profile")
+    kv("Name", gv.get("display_name") or gv.get("username") or "-")
+    if gv.get("username") and gv["username"] != gv.get("display_name"):
+        kv("Username", gv["username"])
+    if gv.get("location"):
+        kv("Location", gv["location"])
+    if gv.get("about"):
+        item_dim(f"  {gv['about'][:150]}")
+    kv("Profile", gv.get("profile_url", ""))
+    if gv.get("note"):
+        item_dim(f"  {gv['note']}")
+
+    accounts = gv.get("accounts") or []
+    if accounts:
+        found("Linked accounts (feed these to the username module):", accounts,
+              extract=lambda a: f"{a['service']}: {a['username']}  {a['url']}")
 
 
 def show_username(r):
-    labels = {
-        "all_4":             "Username found on (all 4 tools agree):",
-        "all_3_no_bb":       "user-scanner + sherlock + maigret (blackbird missed):",
-        "all_3_no_mg":       "user-scanner + sherlock + blackbird (maigret missed):",
-        "all_3_no_sh":       "user-scanner + maigret + blackbird (sherlock missed):",
-        "all_3_no_us":       "sherlock + maigret + blackbird (user-scanner missed):",
-        "us+sherlock":       "user-scanner + sherlock agree (others missed):",
-        "us+maigret":        "user-scanner + maigret agree (others missed):",
-        "us+blackbird":      "user-scanner + blackbird agree (others missed):",
-        "sherlock+maigret":  "sherlock + maigret agree (others missed):",
-        "sherlock+blackbird":"sherlock + blackbird agree (others missed):",
-        "maigret+blackbird": "maigret + blackbird agree (others missed):",
-        "us_only":           "Only user-scanner found:",
-        "sherlock_only":     "Only sherlock found:",
-        "maigret_only":      "Only maigret found:",
-        "blackbird_only":    "Only blackbird found:",
-    }
-    for key, label in labels.items():
-        only(label, r[key])
-    breach(r.get("breach", {}))
-    if not any(v for k, v in r.items() if k != "breach"):
+    from .username import SECTION_LABELS
+    verdict = r.get("verdict")
+    if verdict:
+        if verdict.startswith("No verified"):
+            empty(verdict)
+        else:
+            _print(f"\n  {verdict}", "yellow" if "unconfirmed" in verdict else None)
+    for key, label in SECTION_LABELS.items():
+        if key == "breach":
+            breach(r.get("breach", {}))
+            continue
+        only(label + ":", r.get(key))
+    _show_details(r.get("details"))
+    _rejection_note(r)
+    if not any(v for k, v in r.items()
+               if k not in ("breach", "rejected", "candidates", "verdict",
+                            "details")):
         empty("No results found.")
+
+
+def _show_details(details):
+    """Per-platform data extracted by maigret.
+
+    maigret resolves considerably more than a profile URL — a YouTube hit
+    yields the channel id, real name, bio and avatar — and reducing that to a
+    bare link throws away the most actionable part of the result.
+    """
+    if not details:
+        return
+    section("Extracted account data")
+    for domain, fields in details.items():
+        item(domain)
+        for key, value in fields.items():
+            # Truncate to keep the value inside the column; a long avatar URL
+            # otherwise wraps to column zero and breaks the alignment below it.
+            label = key[:22].ljust(22)
+            _print(f"      {label} {_trunc(value, 54)}", None, dim=True)
 
 
 def show_phone(r):
@@ -320,6 +386,9 @@ def show_website(r):
     if not r:
         return
     for section_title, items in r.items():
+        if section_title == "vulns":
+            _show_vulns(items)
+            continue
         label = section_title.replace("_", " ").title()
         if isinstance(items, list):
             if items:
@@ -331,6 +400,34 @@ def show_website(r):
                 section(label)
                 for k, v in items.items():
                     kv(k, v)
+
+
+def _show_vulns(vn):
+    """Render the CVE block, which is structured rather than flat."""
+    count = vn.get("cve_count", 0)
+    section(f"Known Vulnerabilities — {count} CVE{'s' if count != 1 else ''}")
+    if vn.get("status") == "error":
+        item_dim(f"  lookup failed: {vn.get('reason', 'unknown')}")
+        return
+    if not count:
+        item_dim("  No known CVEs for the versions detected")
+        return
+    for c in vn.get("cves", []):
+        sev = (c.get("severity") or "").upper()
+        colour = {"CRITICAL": "red", "HIGH": "red", "MEDIUM": "yellow"}.get(sev)
+        score = f" {c['score']}" if c.get("score") is not None else ""
+        _print(f"\n    {c['id']}  {sev}{score}  —  "
+               f"{c.get('product')} {c.get('version')}", colour, bold=True)
+        if c.get("affected"):
+            item_dim(f"      affected: {'; '.join(c['affected'])}")
+        if c.get("description"):
+            item_dim(f"      {c['description'][:150]}")
+        for ref in (c.get("references") or [])[:2]:
+            item_dim(f"      {ref}")
+    if vn.get("skipped"):
+        item_dim(f"\n  Not queried (cap reached): {', '.join(vn['skipped'])}")
+    item_dim("\n  Affected ranges are NVD's structured data. Advisory prose keeps")
+    item_dim("  its original wording after NVD widens a range, so trust the range.")
 
 
 def show_metadata(r):
@@ -525,125 +622,6 @@ def show_opsec(r):
                 good(f"    {rec}")
             else:
                 item(rec)
-
-
-def _section_hdr(text):
-    _print(f"\n  {text}", _GREEN)
-
-
-def show_investigation(r):
-    inputs = r.get("inputs", {})
-    results = r.get("results", {})
-    correlations = r.get("correlations", [])
-
-    _print("\n  ── Full Investigation Report ──", _GREEN, bold=True)
-
-    _section_hdr("Known")
-    for k in ("email", "username", "phone", "website"):
-        if inputs.get(k) and k in results:
-            kv(f"{k.capitalize():10}", inputs[k])
-
-    # ── Email ──
-    er = results.get("email", {})
-    if "error" not in er and er:
-        _section_hdr("Email")
-        sites = []
-        for key in ("both", "holehe_only", "user_scanner_only", "blackbird_only"):
-            for item in er.get(key, []):
-                if "domain" in item:
-                    sites.append(item["domain"])
-        if sites:
-            _print(f"    Registered on {len(sites)} sites", _GREEN)
-            _print(f"    {', '.join(sites[:12])}", _GREEN)
-        br = er.get("breach", {})
-        if br.get("found"):
-            _print(f"    Breach: {br['found']} databases", "yellow")
-        domain = inputs.get("email", "").split("@")[-1] if "@" in inputs.get("email", "") else None
-        if domain:
-            ips = r.get("entities", {}).get("ips", [])
-            _print(f"    Domain: {domain}", None)
-            if ips:
-                _print(f"    IP: {ips[0]}", None, dim=True)
-
-    # ── Username ──
-    ur = results.get("username", {})
-    if "error" not in ur and ur:
-        _section_hdr("Username")
-        all_sites = []
-        us_keys = ["all_4", "all_3_no_bb", "all_3_no_mg", "all_3_no_sh", "all_3_no_us",
-                   "us+sherlock", "us+maigret", "us+blackbird",
-                   "sherlock+maigret", "sherlock+blackbird", "maigret+blackbird",
-                   "us_only", "sherlock_only", "maigret_only", "blackbird_only"]
-        for key in us_keys:
-            for item in ur.get(key, []):
-                if "domain" in item:
-                    all_sites.append(item["domain"])
-        if all_sites:
-            _print(f"    Found on {len(all_sites)} platforms", _GREEN)
-            for i in range(0, len(all_sites), 6):
-                chunk = all_sites[i:i+6]
-                _print(f"    {', '.join(chunk)}", _GREEN)
-        br = ur.get("breach", {})
-        if br.get("found"):
-            _print(f"    Breach: {br['found']} databases", "yellow")
-
-    # ── Phone ──
-    pr = results.get("phone", {})
-    if "error" not in pr and pr:
-        _section_hdr("Phone")
-        pi = pr.get("phonenumbers", {})
-        if "error" not in pi:
-            carrier = pi.get("carrier", "")
-            region = pi.get("region", "")
-            location = pi.get("location", "")
-            parts = [p for p in [carrier, region, location] if p]
-            _print(f"    {' · '.join(parts)}", None) if parts else None
-        br = pr.get("breach", {})
-        if br.get("found"):
-            _print(f"    Breach: {br['found']} databases", "yellow")
-
-    # ── Website ──
-    wr = results.get("website", {})
-    if "error" not in wr and wr:
-        _section_hdr("Website")
-        dns = wr.get("dns_records", {})
-        a_recs = dns.get("A", "")
-        if a_recs:
-            _print(f"    IP: {a_recs}", None)
-        ports = wr.get("port_scan", [])
-        if ports:
-            parts = ports[0].split(":", 1)[1].strip() if ":" in ports[0] else ports[0]
-            _print(f"    Ports: {parts}", None)
-        who = wr.get("whois", {})
-        org = who.get("Organization", who.get("OrgName", ""))
-        country = who.get("Country", "")
-        if org:
-            loc = f" ({country})" if country else ""
-            _print(f"    WHOIS: {org}{loc}", None)
-        who_emails = []
-        for email_key in ("Extra Emails", "Email", "Tech Email", "Admin Email"):
-            val = who.get(email_key, "")
-            for e in val.split(","):
-                e = e.strip()
-                if e and "@" in e:
-                    who_emails.append(e)
-        if who_emails:
-            _print(f"    WHOIS emails: {', '.join(who_emails[:4])}", "yellow")
-        subs = wr.get("subdomains", [])
-        crt = wr.get("crt_sh_subdomains", [])
-        all_subs = sorted(set(subs) | set(crt))
-        if all_subs:
-            _print(f"    Subdomains: {', '.join(all_subs[:8])}", None)
-
-    # ── Connections ──
-    if correlations:
-        _section_hdr("Connections")
-        for c in correlations:
-            icon = "✓" if c["type"] == "match" else "·"
-            color = _GREEN if c["type"] == "match" else None
-            _print(f"    {icon} {c['desc']}", color)
-            if c.get("detail"):
-                _print(f"      — {c['detail']}", None, dim=True)
 
 
 # ─── internals ───────────────────────────────────────────

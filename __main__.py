@@ -2,14 +2,13 @@
 import sys
 import re
 
-from .email import email
+from .email_recon import email
 from .username import username
 from .website import website
 from .phone import phone
 from .metadata import extract as metadata
 from .ip import address as ip_address
 from .opsec import health_check as opsec_check
-from .investigation import investigate
 from .darkweb import darkweb, pwned_password
 from .utils import set_proxy
 from .export import json_output as export_json, csv_output as export_csv
@@ -18,13 +17,15 @@ from . import display as ui
 from . import __version__
 
 
-_USAGE = ("Usage: spyglass email|username|phone|ip|website|metadata|darkweb|investigation <target> "
+_USAGE = ("Usage: spyglass email|username|phone|ip|website|metadata|darkweb <target> "
           "[--type TYPE] [--json] [--csv] [--report] [--store] [--proxy URL]\n"
+          "       spyglass website <target> [--no-vulns] [--cve-cap N] [--nvd-key KEY]\n"
           "       spyglass darkweb --password   (check a password against Pwned Passwords)\n"
           "       spyglass cases [list|diff|timeline|export] [<target>] [--type TYPE]")
 
 
-def _run_query(qtype, target, do_json=False, do_csv=False, do_report=False, sub_type=None, do_store=False, top_ports=None):
+def _run_query(qtype, target, do_json=False, do_csv=False, do_report=False, sub_type=None, do_store=False, top_ports=None,
+               vulns=True, nvd_key=None, cve_cap=3):
     """Run a single query, display results, export if requested."""
     qtype = qtype.lower()
     result = None
@@ -43,7 +44,7 @@ def _run_query(qtype, target, do_json=False, do_csv=False, do_report=False, sub_
         ui.show_phone(result)
     elif qtype == "website":
         ui.header("Website recon", target)
-        result = website(target)
+        result = website(target, vulns=vulns, nvd_key=nvd_key, cve_cap=cve_cap)
         ui.show_website(result)
     elif qtype == "metadata":
         ui.header("Metadata extraction", target)
@@ -60,11 +61,6 @@ def _run_query(qtype, target, do_json=False, do_csv=False, do_report=False, sub_
     elif qtype == "opsec":
         result = opsec_check()
         ui.show_opsec(result)
-    elif qtype == "investigation":
-        ui.header("Full Investigation", "")
-        raw_inputs = _parse_investigation_input(target)
-        result = investigate(raw_inputs)
-        ui.show_investigation(result)
 
     if result is not None:
         if do_json:
@@ -82,33 +78,6 @@ def _run_query(qtype, target, do_json=False, do_csv=False, do_report=False, sub_
                 ui.warn("Could not store result.")
 
 
-def _parse_investigation_input(raw):
-    """Parse input into a dict. Supports both formats:
-      'email: x, username: y' (explicit keys)
-      'x, y, z, w'           (positional: email, username, phone, website)
-    """
-    parts = [p.strip() for p in raw.split(",") if p.strip()]
-    inputs = {}
-
-    # Check if any part has a colon — use key:value parsing
-    if any(":" in p for p in parts):
-        for part in parts:
-            if ":" in part:
-                key, val = part.split(":", 1)
-                key = key.strip().lower()
-                val = val.strip()
-                if key in ("email", "username", "phone", "website") and val:
-                    inputs[key] = val
-        return inputs
-
-    # Positional: email, username, phone, website
-    keys = ["email", "username", "phone", "website"]
-    for i, val in enumerate(parts):
-        if i < len(keys) and val:
-            inputs[keys[i]] = val
-    return inputs
-
-
 def _parse_args(argv):
     """Parse CLI flags and return (proxy, json, csv, report, type, password, store, top_ports, positional)."""
     proxy = None
@@ -119,6 +88,9 @@ def _parse_args(argv):
     do_password = False
     do_store = False
     top_ports = None
+    vulns = True
+    nvd_key = None
+    cve_cap = 3
     positional = []
     i = 0
     while i < len(argv):
@@ -150,6 +122,26 @@ def _parse_args(argv):
             proxy = a.split("=", 1)[1]
             i += 1
             continue
+        if a == "--no-vulns":
+            vulns = False
+            i += 1
+            continue
+        if a == "--nvd-key" and i + 1 < len(argv):
+            nvd_key = argv[i + 1]
+            i += 2
+            continue
+        if a.startswith("--nvd-key="):
+            nvd_key = a.split("=", 1)[1]
+            i += 1
+            continue
+        if a == "--cve-cap" and i + 1 < len(argv):
+            cve_cap = argv[i + 1]
+            i += 2
+            continue
+        if a.startswith("--cve-cap="):
+            cve_cap = a.split("=", 1)[1]
+            i += 1
+            continue
         if a == "--json":
             do_json = True
             i += 1
@@ -172,13 +164,8 @@ def _parse_args(argv):
             continue
         positional.append(a)
         i += 1
-    return proxy, do_json, do_csv, do_report, type_hint, do_password, do_store, top_ports, positional
-
-
-def _run_investigation(do_json, do_csv, do_report=False, do_store=False):
-    raw = ui.investigation_prompt()
-    if raw:
-        _run_query("investigation", raw, do_json, do_csv, do_report, do_store=do_store)
+    return (proxy, do_json, do_csv, do_report, type_hint, do_password,
+            do_store, top_ports, positional, vulns, nvd_key, cve_cap)
 
 
 def _run_password_check():
@@ -198,7 +185,7 @@ def _show_help():
     ui.kv("1  Email",       "Check email against holehe + user-scanner + blackbird")
     ui.kv("2  Username",    "Search username across 400+ platforms (4 tools)")
     ui.kv("3  Phone",       "Validate & footprint a phone number")
-    ui.kv("4  Website",     "Full recon: DNS, ports, headers, WHOIS, subdomains, dirs")
+    ui.kv("4  Website",     "Full recon: DNS, ports, headers, WHOIS, subdomains, dirs, CVEs")
     ui.kv("5  Metadata",    "Extract metadata from a file (EXIF, GPS, docs, etc.)")
     ui.kv("6  IP recon",    "Geolocate, DNS, WHOIS, open ports, Shodan")
     ui.blank()
@@ -209,13 +196,14 @@ def _show_help():
     ui.item_dim("Non-interactive: spyglass email user@example.com --json --report")
 
 
-def _run_query_or_prompt(qtype, do_json, do_csv, do_report=False, do_store=False):
+def _run_query_or_prompt(qtype, do_json, do_csv, do_report=False, do_store=False, **kw):
     if qtype == "opsec":
         _run_query("opsec", "", do_json, do_csv, do_report, do_store=do_store)
     else:
         target = ui.target_prompt(qtype)
         if target:
-            _run_query(qtype, target, do_json, do_csv, do_report, do_store=do_store)
+            _run_query(qtype, target, do_json, do_csv, do_report,
+                       do_store=do_store, **kw)
 
 
 def _run_cases(subcommand, target=None, qtype=None, do_json=False):
@@ -275,7 +263,8 @@ def _run_cases(subcommand, target=None, qtype=None, do_json=False):
 
 
 def _cli():
-    proxy, do_json, do_csv, do_report, type_hint, do_password, do_store, top_ports, positional = _parse_args(sys.argv[1:])
+    (proxy, do_json, do_csv, do_report, type_hint, do_password, do_store,
+     top_ports, positional, vulns, nvd_key, cve_cap) = _parse_args(sys.argv[1:])
 
     if proxy:
         set_proxy(proxy)
@@ -295,10 +284,11 @@ def _cli():
     if len(positional) >= 2:
         qtype = positional[0].lower()
         if qtype in ("email", "username", "phone", "website", "metadata", "ip",
-                     "investigation", "darkweb"):
-            target = " ".join(positional[1:]) if qtype == "investigation" else positional[1]
+                     "darkweb"):
+            target = positional[1]
             _run_query(qtype, target, do_json, do_csv, do_report,
-                       sub_type=type_hint, do_store=do_store, top_ports=top_ports)
+                       sub_type=type_hint, do_store=do_store, top_ports=top_ports,
+                       vulns=vulns, nvd_key=nvd_key, cve_cap=cve_cap)
         else:
             ui.warn(_USAGE)
         return
@@ -326,10 +316,9 @@ def _cli():
         if state == "main":
             if inp == "1":     state = "identity"
             elif inp == "2":   state = "infra"
-            elif inp == "3":   _run_investigation(do_json, do_csv, do_report, do_store)
-            elif inp == "4":   state = "utils"
-            elif inp == "5":   break
-            else:              ui.warn("Invalid. Enter 1-5.")
+            elif inp == "3":   state = "utils"
+            elif inp == "4":   break
+            else:              ui.warn("Invalid. Enter 1-4.")
 
         elif state == "identity":
             if inp == "1":     _run_query_or_prompt("email", do_json, do_csv, do_report, do_store)
