@@ -70,7 +70,7 @@ _GREEN = "#00ff00"
 
 _MAIN_ITEMS = [
     "[1]  Identity              (email, username, phone, dark web)",
-    "[2]  Infrastructure        (website, IP)",
+    "[2]  Infrastructure        (website, IP, ASN)",
     "[3]  Utilities             (OPSEC, metadata, help, clear)",
     "[4]  Exit",
 ]
@@ -86,7 +86,8 @@ _SUB_MENUS = {
     "infra": [
         "[1]  Website recon",
         "[2]  IP address recon",
-        "[3]  Back",
+        "[3]  ASN / routing",
+        "[4]  Back",
     ],
     "utils": [
         "[1]  OPSEC health check",
@@ -100,7 +101,7 @@ _SUB_MENUS = {
 _SUB_LABELS = {
     "main":     "Select [1-4]",
     "identity": "Select [1-5]",
-    "infra":    "Select [1-3]",
+    "infra":    "Select [1-4]",
     "utils":    "Select [1-5]",
 }
 
@@ -146,6 +147,7 @@ def target_prompt(qtype):
         "website":  "Enter domain or URL",
         "metadata": "Enter file path",
         "ip":       "Enter IP address or domain",
+        "asn":      "Enter IP, prefix, or AS number",
         "darkweb":  "Enter email, username, phone, domain, or IP",
     }
     label = labels.get(qtype, "Enter target")
@@ -389,6 +391,12 @@ def show_website(r):
         if section_title == "vulns":
             _show_vulns(items)
             continue
+        if section_title == "passive_dns":
+            _show_passive_dns(items)
+            continue
+        if section_title == "observed":
+            _show_observed(items)
+            continue
         label = section_title.replace("_", " ").title()
         if isinstance(items, list):
             if items:
@@ -400,6 +408,41 @@ def show_website(r):
                 section(label)
                 for k, v in items.items():
                     kv(k, v)
+
+
+def _show_passive_dns(pdns):
+    """Historical resolutions, as a table.
+
+    Rendered explicitly because the generic walker would print the whole
+    ``resolved`` map as one value, which is unreadable and hides the one thing
+    worth seeing: a name whose address has not moved in a long time.
+    """
+    if not isinstance(pdns, dict):
+        return
+    hosts = pdns.get("hosts") or 0
+    records = pdns.get("records") or 0
+    section(f"Passive DNS — {hosts} name(s), {records} record(s)")
+    for name, recs in (pdns.get("resolved") or {}).items():
+        for rec in recs[:6]:
+            seen = rec.get("last_seen") or "?"
+            rtype = (rec.get("type") or "").lower()
+            item_dim(f"  {name} -> {rec.get('ip')}"
+                     + (f" ({rtype})" if rtype else "")
+                     + f"  last seen {seen}")
+        if len(recs) > 6:
+            item_dim(f"    …and {len(recs) - 6} more for {name}")
+
+
+def _show_observed(items):
+    """urlscan.io page observations, as a table."""
+    section("Observed pages (urlscan.io)")
+    for o in items:
+        when = o.get("scanned") or "?"
+        bits = [b for b in (o.get("ip"), o.get("asn"), o.get("server")) if b]
+        item(f"{o.get('url') or '?'}")
+        item_dim(f"  {when}  {' | '.join(bits)}")
+        if o.get("title"):
+            item_dim(f"  {o['title']}")
 
 
 def _show_vulns(vn):
@@ -483,6 +526,8 @@ def show_ip(r):
     geo = r.get("geo")
     if geo:
         section("Geolocation")
+        if geo.get("_source"):
+            kv("Source", geo["_source"].split(" (")[0])
         kv("Country", geo.get("country"))
         kv("Region", geo.get("region"))
         kv("City", geo.get("city"))
@@ -505,19 +550,17 @@ def show_ip(r):
         for k, v in who.items():
             kv(k.replace("_", " ").title(), v)
 
-    sd = r.get("shodan")
+    sd = r.get("internetdb")
     if sd:
-        section("Shodan")
+        section("InternetDB (Shodan)")
         if sd.get("ports"):
             kv("Open ports", ", ".join(str(p) for p in sd["ports"]))
         if sd.get("hostnames"):
             kv("Hostnames", ", ".join(sd["hostnames"]))
-
-    ports = r.get("open_ports")
-    if ports:
-        section("Open ports (nmap)")
-        for p in ports:
-            item(str(p))
+        if sd.get("cpes"):
+            kv("Products", ", ".join(sd["cpes"]))
+        if sd.get("tags"):
+            kv("Tags", ", ".join(sd["tags"]))
 
 
 def show_darkweb(r):
@@ -562,6 +605,86 @@ def show_darkweb(r):
                 item(f"{x.get('name', 'unknown')} ({x.get('date', 'n/a')})")
         else:
             item_dim("No known breaches")
+
+
+def show_asn(r):
+    if "error" in r:
+        err(r["error"])
+        if r.get("hint"):
+            item_dim(f"    {r['hint']}")
+        return
+
+    section("Routing")
+    if r.get("prefix"):
+        kv("Prefix", r["prefix"])
+    kv("Query", f"{r.get('query', '?')} ({r.get('query_type', '?')})")
+    if "announced" in r:
+        if r["announced"]:
+            kv("Announced", "yes")
+        else:
+            warn("    Announced: no")
+            if r.get("unannounced_reason"):
+                item_dim(f"      {r['unannounced_reason']}")
+
+    origins = r.get("origin_asns") or []
+    if origins:
+        section("Origin AS")
+        for o in origins:
+            holder = o.get("holder") or "unknown holder"
+            item(f"AS{o['asn']}  {holder}")
+
+    if r.get("asn") and r.get("holder"):
+        section("Autonomous System")
+        kv("AS", f"AS{r['asn']}")
+        kv("Holder", r["holder"])
+
+    reg = r.get("registry")
+    if reg:
+        section("Registry")
+        kv("Range", reg.get("resource"))
+        kv("Allocation", reg.get("desc"))
+        kv("Registry", reg.get("name"))
+
+    if r.get("covering_prefixes"):
+        section("Covering Prefixes")
+        item_dim("less-specific prefixes above the matched one")
+        for p in r["covering_prefixes"]:
+            item(p)
+
+    rpki = r.get("rpki")
+    if rpki:
+        section("RPKI")
+        for entry in rpki:
+            status = str(entry.get("status", "unknown")).lower()
+            line = f"AS{entry.get('origin_asn')}  {status}"
+            if status == "valid":
+                good(f"    {line}")
+            elif status == "invalid":
+                # A conflicting ROA is the one finding in this tool that reports
+                # a weakness rather than a fact, so it is called out in colour.
+                warn(f"    {line}  — a ROA names a different origin")
+            else:
+                item(f"{line}  — no covering ROA")
+    elif r.get("rpki_note"):
+        section("RPKI")
+        item_dim(r["rpki_note"])
+    for err_msg in r.get("rpki_errors") or []:
+        item_dim(f"RPKI unavailable: {err_msg}")
+
+    fp = r.get("announced_prefixes")
+    if fp:
+        section("Announced Footprint")
+        kv("Total prefixes", fp.get("total"))
+        if fp.get("ipv4_total") is not None:
+            kv("IPv4 / IPv6", f"{fp['ipv4_total']} / {fp['ipv6_total']}")
+        for e in fp.get("rpki_errors") or []:
+            item_dim(e)
+        if fp.get("error"):
+            item_dim(fp["error"])
+        if fp.get("note"):
+            item_dim(fp["note"])
+        for p in fp.get("sample") or []:
+            item_dim(p)
 
 
 def show_pwned(r):

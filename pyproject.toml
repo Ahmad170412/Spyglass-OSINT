@@ -1,0 +1,119 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spyglass-osint"
+dynamic = ["version"]
+description = "The OSINT unified CLI — email, username, phone, website, IP, ASN, metadata, dark web and OPSEC, behind one interface."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+keywords = [
+    "osint", "recon", "reconnaissance", "cli", "security", "pentest",
+    "subdomains", "breach", "metadata", "routing", "rpki",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Legal Industry",
+    "Natural Language :: English",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Internet",
+    "Topic :: Utilities",
+]
+
+# Only what the CLI needs to start. Every module degrades gracefully when its
+# own tool is missing, so the recon engines below are extras rather than
+# requirements — `holehe` and `maigret` in particular pull large dependency
+# trees, and a `pip install` that drags in torch to print a version banner is
+# how a tool gets uninstalled.
+#
+# rich and cryptography are declared even though the code tolerates their
+# absence: without rich you lose the TUI, and without cryptography the case
+# store falls back to plaintext on disk, which is not a trade a recon tool
+# should make silently. Both guards stay, because a minimal install still works.
+dependencies = [
+    "rich>=13.0.0",
+    "phonenumbers>=8.13.0",
+    "cryptography>=42.0.0",
+]
+
+[project.optional-dependencies]
+# The web console (spyglass/webapp.py). The CLI never imports flask.
+web = ["flask>=3.0.0"]
+
+# Third-party recon engines, invoked as subprocesses from utils._run.
+tools = [
+    "holehe",
+    "user-scanner",
+    "sherlock-project",
+    "maigret",
+    # 1.2 is the newest release and is the last one that ships the `ignorant`
+    # console script phone.py invokes. The pin used to read >=2.0, which no
+    # published version satisfies — pip resolves it as unsatisfiable, setup.sh
+    # reported it as a warning and moved on, and the phone module quietly ran
+    # without its footprint source for the whole time.
+    "ignorant>=1.2",
+]
+
+# Document/EXIF extraction (spyglass/metadata.py). All imported lazily, per
+# file type, so installing this group buys the whole module rather than one
+# format.
+metadata = [
+    "pillow",
+    "pypdf2",
+    "pdfminer.six",
+    "python-docx",
+    "openpyxl",
+]
+
+all = [
+    "flask>=3.0.0",
+    "holehe",
+    "user-scanner",
+    "sherlock-project",
+    "maigret",
+    "ignorant>=1.2",
+    "pillow",
+    "pypdf2",
+    "pdfminer.six",
+    "python-docx",
+    "openpyxl",
+]
+
+[project.urls]
+Homepage = "https://github.com/Ahmad170412/Spyglass-OSINT"
+Repository = "https://github.com/Ahmad170412/Spyglass-OSINT"
+Changelog = "https://github.com/Ahmad170412/Spyglass-OSINT/blob/main/CHANGELOG.md"
+Issues = "https://github.com/Ahmad170412/Spyglass-OSINT/issues"
+
+[project.scripts]
+spyglass = "spyglass.__main__:main"
+
+[tool.setuptools]
+# Explicit, because auto-discovery sees two top-level directories (spyglass/
+# and tests/) and refuses to guess. tests/ is deliberately not packaged: it
+# imports helpers by bare name, which only resolves from the source tree.
+packages = ["spyglass"]
+include-package-data = false
+
+[tool.setuptools.dynamic]
+# Read from spyglass/__init__.py so the version has exactly one home. The test
+# suite already fails the build if __init__ and CHANGELOG.md disagree.
+version = { attr = "spyglass.__init__.__version__" }
+
+[tool.setuptools.package-data]
+# webapp.py serves the console with send_from_directory(HERE, "index.html"),
+# so a wheel without it installs a console that 404s on its own front end.
+spyglass = ["index.html"]

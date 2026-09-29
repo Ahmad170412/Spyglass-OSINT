@@ -1,12 +1,14 @@
-phonenumbers>=8.13.0
-holehe
-user-scanner
-sherlock-project
-maigret
-shodan
-ignorant>=2.0
-rich>=13.0.0
-cryptography>=42.0.0
-
-# Web console (webapp.py) only. The CLI does not need it.
-flask>=3.0.0
+# The authoritative dependency set lives in pyproject.toml:
+#
+#     pip install spyglass-osint            # core CLI only
+#     pip install "spyglass-osint[all]"     # + recon engines, web console, metadata
+#
+# This file is kept so the `pip install -r requirements.txt` form in older
+# instructions still resolves, and it installs the local checkout with every
+# extra so the source tree is runnable exactly as the PyPI package would be.
+#
+# Note on `shodan`: it is deliberately absent. website.py shells out to the
+# Shodan *command-line client* (subprocess, _phase_shodan_ports), it never
+# imports the Python library of the same name — so installing `shodan` from pip
+# satisfies nothing here. The CLI comes from brew/apt, and setup.sh handles it.
+-e .[all]

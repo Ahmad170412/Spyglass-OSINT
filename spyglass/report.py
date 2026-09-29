@@ -289,9 +289,14 @@ def _render_website(r: dict) -> list[str]:
         ("wayback_subdomains", "Subdomains (Wayback Machine)"),
         ("crt_sh_subdomains", "Subdomains (certificate transparency)"),
         ("http_probe", "HTTP probe (httpx)"),
-        ("port_scan", "Port scan (nmap)"),
+        ("internetdb", "InternetDB (Shodan)"),
         ("shodan", "Shodan"),
-        ("directories", "Directories (gobuster)"),
+        ("observed_ips", "Observed IPs (urlscan.io)"),
+        ("observed_asns", "Observed ASNs (urlscan.io)"),
+        ("historical_servers", "Historical Server headers (urlscan.io)"),
+        ("referenced_by", "Referenced by (third-party mentions, not assets)"),
+        ("directories", "Directories (archived paths)"),
+        ("archived_paths", "Archived paths (Wayback Machine)"),
         ("interesting_files", "Interesting / exposed files"),
         ("robots", "robots.txt"),
         ("sitemap", "Sitemap"),
@@ -304,6 +309,8 @@ def _render_website(r: dict) -> list[str]:
         if items:
             lines += _section(label, items)
     lines += _render_vulns(r.get("vulns"))
+    lines += _render_passive_dns(r.get("passive_dns") or {})
+    lines += _render_observed(r.get("observed") or [])
     headers = r.get("http_headers", {})
     if headers:
         lines += _kv_section("HTTP headers", headers)
@@ -331,8 +338,10 @@ def _render_website(r: dict) -> list[str]:
     covered = {
         "dns_records", "dns_email_security", "wildcard_dns", "zone_transfer",
         "subdomains", "subdomain_sources", "wayback_subdomains",
-        "crt_sh_subdomains", "http_probe", "port_scan", "shodan",
-        "directories", "interesting_files", "robots", "sitemap",
+        "crt_sh_subdomains", "http_probe", "internetdb", "shodan",
+        "passive_dns", "observed",
+        "directories", "archived_paths", "archived_paths_note",
+        "interesting_files", "robots", "sitemap",
         "js_endpoints", "js_interesting", "reverse_dns", "ptr_sweep",
         "http_headers", "security_headers", "cookies", "csp_domains",
         "technologies", "favicon", "tls", "whois", "history",
@@ -340,6 +349,121 @@ def _render_website(r: dict) -> list[str]:
     leftover = {k: v for k, v in r.items() if k not in covered and k != "error"}
     if leftover:
         lines += _render_generic(leftover)
+    return lines
+
+
+def _render_passive_dns(pdns: dict) -> list[str]:
+    """Historical resolutions as a table, not a dict dump.
+
+    The generic walker would emit the whole ``resolved`` map as one value, which
+    buries the only part worth reading: which name has sat on the same address
+    for a long time.
+    """
+    if not isinstance(pdns, dict):
+        return []
+    lines = [f"### Passive DNS — {pdns.get('hosts', 0)} name(s), "
+             f"{pdns.get('records', 0)} record(s)", ""]
+    for name, recs in (pdns.get("resolved") or {}).items():
+        for rec in recs[:6]:
+            seen = rec.get("last_seen") or "?"
+            rtype = (rec.get("type") or "").lower()
+            lines.append(f"- `{name}` -> `{rec.get('ip')}`"
+                         + (f" ({rtype})" if rtype else "")
+                         + f" — last seen {seen}")
+        if len(recs) > 6:
+            lines.append(f"- …and {len(recs) - 6} more for `{name}`")
+    lines.append("")
+    return lines
+
+
+def _render_observed(items: list) -> list[str]:
+    if not isinstance(items, list) or not items:
+        return []
+    lines = ["### Observed pages (urlscan.io)", "",
+             "| URL | IP | ASN | Server | Scanned |", "|---|---|---|---|---|"]
+    for o in items:
+        lines.append(f"| `{o.get('url', '')}` | {o.get('ip') or ''} | "
+                     f"{o.get('asn') or ''} | {o.get('server') or ''} | "
+                     f"{o.get('scanned') or ''} |")
+    lines.append("")
+    return lines
+
+
+def _render_asn(r: dict) -> list[str]:
+    lines = []
+    if "error" in r:
+        lines.append(f"> {r['error']}")
+        if r.get("hint"):
+            lines += ["", f"_{r['hint']}_"]
+        lines.append("")
+        return lines
+
+    routing = {}
+    if r.get("prefix"):
+        routing["Prefix"] = r["prefix"]
+    routing["Query"] = r.get("query")
+    routing["Query type"] = r.get("query_type")
+    if "announced" in r:
+        routing["Announced"] = "yes" if r["announced"] else "no"
+    if r.get("asn"):
+        routing["AS"] = f"AS{r['asn']}"
+    if r.get("holder"):
+        routing["Holder"] = r["holder"]
+    lines += _kv_section("Routing", routing)
+
+    if r.get("unannounced_reason"):
+        lines += [f"_Not announced: {r['unannounced_reason']}_", ""]
+
+    origins = r.get("origin_asns") or []
+    if origins:
+        lines += _section(
+            "Origin AS",
+            [f"AS{o['asn']} — {o.get('holder') or 'unknown holder'}" for o in origins],
+        )
+
+    reg = r.get("registry") or {}
+    if reg:
+        lines += _kv_section("Registry", reg)
+
+    if r.get("covering_prefixes"):
+        lines += _section("Covering prefixes (less specific)",
+                          r["covering_prefixes"])
+
+    rpki = r.get("rpki") or []
+    if rpki:
+        lines += [f"### RPKI", ""]
+        for entry in rpki:
+            status = str(entry.get("status", "unknown")).lower()
+            note = ""
+            if status == "invalid":
+                note = " — a ROA names a different origin, so the route is hijackable"
+            elif status != "valid":
+                note = " — no covering ROA, which is not the same as safe"
+            lines.append(f"- **AS{entry.get('origin_asn')}:** {status}{note}")
+            for roa in entry.get("roas") or []:
+                lines.append(f"  - ROA {roa.get('prefix')} origin AS{roa.get('origin')}"
+                             f" max_length {roa.get('max_length')}")
+        lines.append("")
+    elif r.get("rpki_note"):
+        lines += [f"### RPKI", "", f"_{r['rpki_note']}_", ""]
+    for message in r.get("rpki_errors") or []:
+        lines.append(f"_RPKI unavailable: {message}_")
+    if r.get("rpki_errors"):
+        lines.append("")
+
+    fp = r.get("announced_prefixes") or {}
+    if fp:
+        summary = {"Total announced": fp.get("total")}
+        if fp.get("ipv4_total") is not None:
+            summary["IPv4"] = fp["ipv4_total"]
+            summary["IPv6"] = fp["ipv6_total"]
+        lines += _kv_section("Announced footprint", summary)
+        if fp.get("error"):
+            lines += [f"_{fp['error']}_", ""]
+        if fp.get("note"):
+            lines += [f"_{fp['note']}_", ""]
+        if fp.get("sample"):
+            lines += _section("Announced prefixes (sample)", fp["sample"])
     return lines
 
 
@@ -362,12 +486,12 @@ def _render_ip(r: dict) -> list[str]:
     whois = r.get("whois", {})
     if whois:
         lines += _kv_section("WHOIS", whois)
+    internetdb = r.get("internetdb", {})
+    if internetdb:
+        lines += _kv_section("InternetDB (Shodan)", internetdb)
     shodan = r.get("shodan", {})
     if shodan:
         lines += _kv_section("Shodan", shodan)
-    ports = r.get("open_ports")
-    if ports:
-        lines += _section("Open ports (nmap)", [str(p) for p in ports])
     return lines
 
 
@@ -527,6 +651,7 @@ def render(result, qtype: str, target: str) -> str:
         "phone": _render_phone,
         "website": _render_website,
         "ip": _render_ip,
+        "asn": _render_asn,
         "metadata": _render_metadata,
         "opsec": _render_opsec,
         "darkweb": _render_darkweb,

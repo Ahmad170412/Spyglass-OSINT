@@ -5,9 +5,9 @@ import re
 from .email_recon import email
 from .username import username
 from .website import website
-from .phone import phone
 from .metadata import extract as metadata
 from .ip import address as ip_address
+from .asn import asn as asn_lookup
 from .opsec import health_check as opsec_check
 from .darkweb import darkweb, pwned_password
 from .utils import set_proxy
@@ -17,14 +17,89 @@ from . import display as ui
 from . import __version__
 
 
-_USAGE = ("Usage: spyglass email|username|phone|ip|website|metadata|darkweb <target> "
+_USAGE = ("Usage: spyglass email|username|phone|ip|asn|website|metadata|darkweb <target> "
           "[--type TYPE] [--json] [--csv] [--report] [--store] [--proxy URL]\n"
           "       spyglass website <target> [--no-vulns] [--cve-cap N] [--nvd-key KEY]\n"
+          "       spyglass asn <ip|prefix|AS>   (covering prefix, origin AS, RPKI validity)\n"
           "       spyglass darkweb --password   (check a password against Pwned Passwords)\n"
           "       spyglass cases [list|diff|timeline|export] [<target>] [--type TYPE]")
 
+_HELP = f"""Spyglass {__version__} — unified OSINT recon CLI.
 
-def _run_query(qtype, target, do_json=False, do_csv=False, do_report=False, sub_type=None, do_store=False, top_ports=None,
+USAGE
+  spyglass <module> <target> [options]
+  spyglass opsec                      (no target needed)
+  spyglass darkweb --password         (check a password against Pwned Passwords)
+  spyglass cases [list|diff|timeline|export] [<target>] [--type TYPE]
+  spyglass                            (interactive menu, if no target is given)
+
+MODULES
+  email      where an address is registered, breaches, public identity
+  username   which platforms have this profile
+  phone      owner, carrier, region, footprints
+  website    DNS, subdomains, ports, headers, tech stack, TLS, WHOIS, history, CVEs
+  ip         geolocation, reverse DNS, open ports
+  asn        who routes an address: covering prefix, origin AS, holder,
+             RPKI validity (accepts an IP, a CIDR prefix, or an AS number)
+  metadata   hidden data in a file (GPS, camera, document author)
+  darkweb    .onion index search, breaches, breached passwords
+  opsec      is your real IP leaking, is your proxy working
+
+OPTIONS
+  --type TYPE       darkweb target type: email|username|phone|domain|ip
+                    (auto-detected when omitted)
+  --json            save a timestamped JSON file
+  --csv             save a timestamped CSV file
+  --report          write a Markdown dossier
+  --store           persist the run to the case store (default ~/.spyglass)
+  --proxy URL       route through a proxy, e.g. socks5://127.0.0.1:9050
+  --no-vulns        website module: skip the NVD known-vulnerability lookup
+  --cve-cap N       website module: how many products to query (default 3)
+  --nvd-key KEY     NVD API key; raises the rate limit from 5 to 50 per 30s.
+                    Falls back to the NVD_API_KEY environment variable.
+  --version         print the version and exit
+  -h, --help        print this help and exit
+
+NOTES
+  --no-vulns, --cve-cap, --nvd-key and --type apply to the one-shot form
+  only; they are ignored once you drop into the interactive menu. Run with no
+  arguments to get the interactive menu.
+
+REMOVED
+  --top-ports N     went with the nmap port scan. Open ports now come from
+                    Shodan InternetDB and are not tunable."""
+
+
+def _int_or(value, default):
+    """Coerce a CLI flag value to int, falling back to ``default``.
+
+    Numeric flags arrive as raw strings from ``--flag VALUE`` and
+    ``--flag=VALUE``. Passing one straight through to a slice or an
+    argparse-style bound raises ``TypeError`` deep inside a probe, where the
+    failure is swallowed and reported as "lookup failed" rather than as the
+    obvious thing it is. A non-numeric value is a typo, so the default is used
+    rather than failing the whole run.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _warn_removed_flag(name):
+    """Tell the operator a flag was removed, and what replaced it.
+
+    Rejecting loudly is the point. The alternative — accepting the flag and
+    quietly ignoring it — is how a user ends up believing they got a top-1000
+    port scan when they got whatever a passive source happened to know.
+    """
+    ui.warn(f"{name} was removed with the nmap port scan. Open ports now come "
+            f"from Shodan InternetDB, which needs no flag and no API key.")
+    ui.item_dim("  The ports reported are what Shodan's own scan recorded, so "
+                "they may lag the target; they are never a live probe.")
+
+
+def _run_query(qtype, target, do_json=False, do_csv=False, do_report=False, sub_type=None, do_store=False,
                vulns=True, nvd_key=None, cve_cap=3):
     """Run a single query, display results, export if requested."""
     qtype = qtype.lower()
@@ -39,6 +114,13 @@ def _run_query(qtype, target, do_json=False, do_csv=False, do_report=False, sub_
         result = username(target)
         ui.show_username(result)
     elif qtype == "phone":
+        # Imported here, not at module scope. phone.py needs the phonenumbers
+        # package unconditionally, and importing it at the top made every
+        # other entry point depend on it: `spyglass --version` and `--help`
+        # exited 1 on a bare install. webapp.py already holds the same rule
+        # for its handlers, and the CLI should not be laxer than the console.
+        from .phone import phone
+
         ui.header("Checking phone", target)
         result = phone(target)
         ui.show_phone(result)
@@ -52,8 +134,12 @@ def _run_query(qtype, target, do_json=False, do_csv=False, do_report=False, sub_
         ui.show_metadata(result)
     elif qtype == "ip":
         ui.header("IP recon", target)
-        result = ip_address(target, top_ports)
+        result = ip_address(target)
         ui.show_ip(result)
+    elif qtype == "asn":
+        ui.header("ASN / routing", target)
+        result = asn_lookup(target)
+        ui.show_asn(result)
     elif qtype == "darkweb":
         ui.header("Dark web search", target)
         result = darkweb(target, sub_type)
@@ -79,7 +165,7 @@ def _run_query(qtype, target, do_json=False, do_csv=False, do_report=False, sub_
 
 
 def _parse_args(argv):
-    """Parse CLI flags and return (proxy, json, csv, report, type, password, store, top_ports, positional)."""
+    """Parse CLI flags and return (proxy, json, csv, report, type, password, store, positional)."""
     proxy = None
     do_json = False
     do_csv = False
@@ -87,7 +173,6 @@ def _parse_args(argv):
     type_hint = None
     do_password = False
     do_store = False
-    top_ports = None
     vulns = True
     nvd_key = None
     cve_cap = 3
@@ -97,6 +182,9 @@ def _parse_args(argv):
         a = argv[i]
         if a == "--version":
             print(f"Spyglass {__version__}")
+            raise SystemExit(0)
+        if a in ("--help", "-h"):
+            print(_HELP)
             raise SystemExit(0)
         if a == "--password":
             do_password = True
@@ -135,11 +223,11 @@ def _parse_args(argv):
             i += 1
             continue
         if a == "--cve-cap" and i + 1 < len(argv):
-            cve_cap = argv[i + 1]
+            cve_cap = _int_or(argv[i + 1], 3)
             i += 2
             continue
         if a.startswith("--cve-cap="):
-            cve_cap = a.split("=", 1)[1]
+            cve_cap = _int_or(a.split("=", 1)[1], 3)
             i += 1
             continue
         if a == "--json":
@@ -154,18 +242,17 @@ def _parse_args(argv):
             do_report = True
             i += 1
             continue
-        if a == "--top-ports" and i + 1 < len(argv):
-            top_ports = argv[i + 1]
-            i += 2
-            continue
-        if a.startswith("--top-ports="):
-            top_ports = a.split("=", 1)[1]
-            i += 1
+        if a == "--top-ports" or a.startswith("--top-ports="):
+            # Removed with the nmap port scan. Rejected explicitly rather than
+            # ignored: a flag that is accepted and does nothing is worse than
+            # one that tells you it no longer exists.
+            _warn_removed_flag("--top-ports")
+            i += 2 if a == "--top-ports" and i + 1 < len(argv) else 1
             continue
         positional.append(a)
         i += 1
     return (proxy, do_json, do_csv, do_report, type_hint, do_password,
-            do_store, top_ports, positional, vulns, nvd_key, cve_cap)
+            do_store, positional, vulns, nvd_key, cve_cap)
 
 
 def _run_password_check():
@@ -264,7 +351,7 @@ def _run_cases(subcommand, target=None, qtype=None, do_json=False):
 
 def _cli():
     (proxy, do_json, do_csv, do_report, type_hint, do_password, do_store,
-     top_ports, positional, vulns, nvd_key, cve_cap) = _parse_args(sys.argv[1:])
+     positional, vulns, nvd_key, cve_cap) = _parse_args(sys.argv[1:])
 
     if proxy:
         set_proxy(proxy)
@@ -280,14 +367,21 @@ def _cli():
         _run_cases(sub, target, type_hint, do_json)
         return
 
+    # Non-interactive mode: command from args.
+    # opsec is keyless, so it never reaches the two-positional form below.
+    if len(positional) == 1 and positional[0].lower() == "opsec":
+        _run_query("opsec", "", do_json, do_csv, do_report,
+                   do_store=do_store)
+        return
+
     # Non-interactive mode: command from args
     if len(positional) >= 2:
         qtype = positional[0].lower()
         if qtype in ("email", "username", "phone", "website", "metadata", "ip",
-                     "darkweb"):
+                     "darkweb", "asn"):
             target = positional[1]
             _run_query(qtype, target, do_json, do_csv, do_report,
-                       sub_type=type_hint, do_store=do_store, top_ports=top_ports,
+                       sub_type=type_hint, do_store=do_store,
                        vulns=vulns, nvd_key=nvd_key, cve_cap=cve_cap)
         else:
             ui.warn(_USAGE)
@@ -331,8 +425,9 @@ def _cli():
         elif state == "infra":
             if inp == "1":     _run_query_or_prompt("website", do_json, do_csv, do_report, do_store)
             elif inp == "2":   _run_query_or_prompt("ip", do_json, do_csv, do_report, do_store)
-            elif inp == "3":   state = "main"
-            else:              ui.warn("Invalid. Enter 1-3.")
+            elif inp == "3":   _run_query_or_prompt("asn", do_json, do_csv, do_report, do_store)
+            elif inp == "4":   state = "main"
+            else:              ui.warn("Invalid. Enter 1-4.")
 
         elif state == "utils":
             if inp == "1":     _run_query("opsec", "", do_json, do_csv, do_report)
@@ -341,6 +436,16 @@ def _cli():
             elif inp == "4":   ui.banner()
             elif inp == "5":   state = "main"
             else:              ui.warn("Invalid. Enter 1-5.")
+
+
+def main():
+    """Console-script entry point (the ``spyglass`` command).
+
+    Exists so ``pyproject.toml`` has a public name to point at rather than the
+    private ``_cli``; both do the same thing, and ``python -m spyglass`` still
+    routes through ``_cli`` directly.
+    """
+    return _cli()
 
 
 if __name__ == "__main__":

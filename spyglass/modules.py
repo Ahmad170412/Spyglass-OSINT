@@ -89,6 +89,16 @@ MODULES = [
         "fields": [],
         "no_input": True,
     },
+    {
+        "id": "asn", "ix": "09", "name": "ASN / Routing", "icon": "net",
+        "endpoint": "asn",
+        "sub": "Who routes this address: covering prefix, origin AS, holder, and RPKI validity.",
+        # Accepts an IP, a prefix, or an AS number through one field. A type
+        # picker would add a step for no benefit: the module classifies the
+        # input itself and reports which reading it took in query_type.
+        "fields": [{"name": "target", "label": "IP, prefix, or AS", "icon": "net",
+                    "ph": "1.1.1.1, 1.1.1.0/24, or AS13335"}],
+    },
 ]
 
 BY_ID = {m["id"]: m for m in MODULES}

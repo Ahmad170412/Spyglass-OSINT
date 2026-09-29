@@ -6,13 +6,17 @@ connection degrades gracefully instead of failing the whole run.
 
 Design principles
 -----------------
-* No paid APIs and no API keys. Passive sources are crt.sh, HackerTarget,
-  AlienVault OTX (public endpoint), and the Wayback Machine CDX index.
+* Passive only. Nothing in this module sends a probe the target did not ask
+  for: no port scanning, no directory brute-forcing, no wordlist DNS. The
+  former nmap and gobuster passes are gone. Port data comes from Shodan's
+  InternetDB, which reports what Shodan's own scan already saw.
+* No paid APIs and no API keys. Passive sources are crt.sh, CertSpotter,
+  HackerTarget, subfinder, the Wayback Machine CDX index, and Shodan InternetDB.
 * OPSEC-aware: HTTP goes through curl (which honors --proxy); DNS through
   ``dig`` is routed via torsocks when a proxy is active; in-process DNS
   resolution is only used when no proxy is set, so the operator's resolver is
   never leaked through Tor.
-* macOS/Linux focused: dig, curl, whois, nmap, gobuster, httpx and shodan are
+* macOS/Linux focused: dig, curl, whois, httpx, subfinder and shodan are
   auto-detected and skipped cleanly when absent.
 """
 
@@ -41,9 +45,7 @@ from .utils import (
     _run,
     _CURL,
     _DIG,
-    _GOBUSTER,
     _HTPPX,
-    _NMAP,
     _SHODAN,
     _SUBFINDER,
     _WHOIS,
@@ -94,38 +96,10 @@ compliance audit certifications cert certificate licenses license brand
 events calendar maps map locations location store2 stores locator
 """.split()
 
-_DIR_LIST = """
-admin administrator api app assets backup backups cache cdn cgi-bin cmd config
-configuration content css dashboard db demo dev docs download downloads error
-examples export favicon.ico files fonts forum graphql help home html images
-img include includes index install js json language lib library license login
-log logs mail media migrate mobile modules news old package pages panel
-phpinfo.php plugins private prod public README readme reports rest robots.txt
-rss sass save scripts search secure server-status service services session
-setup sitemap.xml sql src ssh stat static stats status storage styles svn
-swagger temp template templates test tmp todo tools tmp update upload uploads
-user users v2 vendor version video views web webapp webroot wiki wpad.dat www
-xml xmlrpc
-""".strip().split()
-
-
-def _dir_wordlist():
-    """Bundled list, or a local SecLists directory wordlist when available."""
-    for path in (
-        "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt",
-        "/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt",
-        "/opt/homebrew/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt",
-        "/usr/local/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt",
-        os.path.expanduser("~/SecLists/Discovery/Web-Content/directory-list-2.3-medium.txt"),
-        os.path.expanduser("~/wordlists/directory-list-2.3-medium.txt"),
-    ):
-        try:
-            if os.path.isfile(path):
-                with open(path, encoding="utf-8", errors="ignore") as f:
-                    return [l.strip() for l in f if l.strip() and not l.startswith("#")]
-        except OSError:
-            continue
-    return _DIR_LIST
+# Removed with the gobuster dir brute-force: _DIR_LIST and _dir_wordlist().
+# Both existed only to feed gobuster a directory wordlist. The
+# `directories` data type is now sourced from archived Wayback paths,
+# which are real URLs rather than guesses — see _phase_dirs.
 
 # Well-known files whose presence leaks configuration, secrets, or the stack.
 _EXPOSURE_PATHS = (
@@ -451,6 +425,162 @@ def _certspotter_subs(host):
     return subs
 
 
+def _rapiddns(host):
+    """RapidDNS: keyless passive DNS, as (subs, rows).
+
+    This is the historical-resolution source the module was missing. Every other
+    subdomain source answers "what names are published somewhere"; this one
+    answers "what did these names actually resolve to, and when did anyone last
+    see them" — which is what surfaces a host still pointing at a stranger's
+    cloud bucket after the owner moved on.
+
+    AlienVault OTX would be the obvious alternative and has better coverage, but
+    its ``passive_dns`` endpoint now answers ``Anonymous access to this endpoint
+    is limited. Please authenticate.`` for unkeyed requests, so it is a keyed
+    source or no source at all. RapidDNS needs nothing and is an HTML scrape,
+    which this module already does for crt.sh and CertSpotter.
+
+    Returns rows of ``(name, ip, rrtype, last_seen)``. Only names inside the
+    target's own domain are returned: a RapidDNS table lists the parent domain
+    too, and treating a sibling as a subdomain of the target is the same
+    misattribution the suffix-matching subdomain bug used to cause.
+    """
+    body = _http_body(f"https://rapiddns.io/subdomain/{host}?full=1",
+                      timeout=30, limit=2_000_000)
+    if not body or "No results" in body or len(body) < 200:
+        return set(), []
+    subs, rows = set(), []
+    for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", body, re.S):
+        cells = [re.sub(r"<[^>]+>", "", c).strip()
+                 for c in re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)]
+        if len(cells) < 2:
+            continue
+        name = cells[0].strip().lower().lstrip("*.")
+        ip = cells[1].strip()
+        # Cell order is name, IP, record type, last-seen date. Anything shorter
+        # is a layout change, and guessing at it would file an IP as a name.
+        if not name or not re.fullmatch(r"[a-z0-9.-]+", name):
+            continue
+        if not re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", ip):
+            continue
+        if not (name == host or name.endswith(f".{host}")):
+            continue
+        subs.add(name)
+        rows.append((name, ip,
+                     cells[2].strip() if len(cells) > 2 else "",
+                     cells[3].strip() if len(cells) > 3 else ""))
+    return subs, rows
+
+
+def _urlscan(host):
+    """urlscan.io: pages someone else already loaded, and who references us.
+
+    Free, no key. Three things come out of it that nothing else here produces:
+
+    * **Observed addresses over time.** ``page.ip`` and ``page.asn`` as
+      urlscan's scanners saw them, with a timestamp — passive confirmation of
+      infrastructure, gathered by a third party.
+    * **Historical server headers.** ``page.server`` is a ``Server`` value
+      read off a real response by someone else's crawl. That is a passive tech
+      fingerprint, which matters most when the live one is hidden behind a CDN.
+    * **Referenced-by sites.** urlscan's ``domain:`` operator also matches pages
+      that *link to* the target, so results whose ``page.domain`` is someone
+      else are third-party references — a mention, a paste, a review, a
+      directory listing. Those are reported separately and never counted as
+      assets, because a site mentioning you is not infrastructure you control.
+    """
+    data = _http_json(
+        f"https://urlscan.io/api/v1/search/?q=domain:{host}&size=60", timeout=30)
+    if not isinstance(data, dict):
+        return {}
+    results = data.get("results")
+    # Not `if not data.get("results")` — a hostile or reshaped response can put
+    # anything under this key, and iterating a string yields characters that
+    # then get `.get()` called on them.
+    if not isinstance(results, list):
+        return {}
+    observed, referrers = [], []
+    servers, ips, asns = set(), set(), set()
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        page = r.get("page")
+        if not isinstance(page, dict):
+            continue
+        pd = str(page.get("domain") or "").lower()
+        if pd and pd != host and not pd.endswith(f".{host}"):
+            if len(referrers) < 15:
+                referrers.append(f"{pd} -> {str(page.get('url') or '')[:70]}")
+            continue
+        if page.get("ip"):
+            ips.add(str(page["ip"]))
+        if page.get("asn"):
+            asns.add(str(page["asn"]))
+        if page.get("server"):
+            servers.add(str(page["server"]))
+        url = str(page.get("url") or "")
+        # An observation with no URL carries no information. Emitting it would
+        # put a row of empty strings in the report's main table, which reads as
+        # a scan that happened and said nothing.
+        if url and len(observed) < 60:
+            stamp = str((r.get("task") or {}).get("time") or "")
+            observed.append({
+                "url": url[:100],
+                "ip": str(page.get("ip") or ""),
+                "asn": str(page.get("asn") or ""),
+                "server": str(page.get("server") or ""),
+                "title": str(page.get("title") or "")[:70],
+                # The full timestamp is kept for ordering and the date is
+                # derived from it. Truncating to a day first makes every scan
+                # from the same date compare equal, so "most recent wins" would
+                # silently resolve to whichever row the search happened to list
+                # first — which is not the same thing.
+                "_ts": stamp,
+                "scanned": stamp[:10],
+            })
+    out = {}
+    if observed:
+        # urlscan returns one row per *scan*, so a popular page appears many
+        # times — the same URL against four Cloudflare anycast addresses on the
+        # same day. Reported raw, the table's first screen is the same link
+        # repeated. Collapsed to one row per URL, keeping the most recent scan
+        # and the addresses it was seen on, "how many times have you seen this"
+        # becomes a column instead of a wall.
+        by_url = {}
+        for o in observed:
+            cur = by_url.get(o["url"])
+            if cur is None:
+                o["scans"] = 1
+                o["ips"] = [o["ip"]] if o["ip"] else []
+                by_url[o["url"]] = o
+                continue
+            cur["scans"] += 1
+            if o["_ts"] > cur["_ts"]:
+                cur["_ts"] = o["_ts"]
+                cur["scanned"] = o["scanned"]
+                cur["ip"] = o["ip"] or cur["ip"]
+                cur["asn"] = o["asn"] or cur["asn"]
+                cur["server"] = o["server"] or cur["server"]
+            if o["ip"] and o["ip"] not in cur["ips"]:
+                cur["ips"].append(o["ip"])
+        merged = sorted(by_url.values(),
+                        key=lambda o: (o["scanned"], o["scans"]), reverse=True)
+        for o in merged:
+            o.pop("_ts", None)
+            if len(o["ips"]) > 1:
+                o["ip"] = f"{o['ip']} (+{len(o['ips']) - 1} more)"
+        out["observed"] = merged[:12]
+    if ips:
+        out["observed_ips"] = sorted(ips)[:40]
+    if asns:
+        out["observed_asns"] = sorted(asns)[:8]
+    if servers:
+        out["historical_servers"] = sorted(servers)[:20]
+    if referrers:
+        out["referenced_by"] = referrers
+    return out
+
+
 def _hackertarget_subs(host):
     """Returns (subs, ips). Free, no key, rate-limited per source IP."""
     subs, ips = set(), set()
@@ -471,8 +601,8 @@ def _hackertarget_subs(host):
 
 
 def _wayback_cdx(host):
-    """One CDX query with matchType=domain: subdomains + snapshot history."""
-    out = {"subs": set(), "first": "", "last": "", "count": 0}
+    """One CDX query with matchType=domain: subdomains, paths, snapshot history."""
+    out = {"subs": set(), "paths": set(), "first": "", "last": "", "count": 0}
     url = (
         f"https://web.archive.org/cdx/search/cdx?url={host}&matchType=domain"
         f"&output=json&fl=timestamp,original,statuscode"
@@ -491,6 +621,16 @@ def _wayback_cdx(host):
         h = (parsed.hostname or "").lower()
         if h and (h.endswith(f".{host}") or h == host):
             out["subs"].add(h)
+            # Paths are only taken from the exact host. A subdomain's paths are
+            # that subdomain's business, and folding them in would attribute
+            # another host's directory layout to the target.
+            #
+            # CDX returns the path percent-encoded, and non-ASCII filenames are
+            # common enough in an archive that leaving them encoded puts a
+            # several-hundred-character escape sequence in the directories list,
+            # where it is indistinguishable from a real directory name.
+            if h == host and parsed.path and len(parsed.path) > 1:
+                out["paths"].add(urllib.parse.unquote(parsed.path))
     if stamps:
         out["first"] = min(stamps)
         out["last"] = max(stamps)
@@ -499,22 +639,29 @@ def _wayback_cdx(host):
 
 
 def _active_brute(host, wildcard, wildcard_ip):
-    """Wordlist brute-force. gobuster preferred; native fallback when no proxy."""
+    """Wordlist DNS brute-force, in-process, no external tool.
+
+    This is the last remaining *active* probe in the module: it resolves
+    ``word.host`` for every entry in the wordlist, so the target's authoritative
+    nameserver sees the lookups. gobuster did the same thing as a subprocess and
+    is gone, but the underlying behaviour is not — in-process resolution is
+    simply what is left.
+
+    Kept because the passive sources genuinely miss names that were never
+    published: a host with no certificate, no CT entry, no archive snapshot and
+    no passive DNS record is exactly the kind that a wordlist finds. It is also
+    the reason the module still needs `_resolve_a`.
+
+    Skipped entirely when a proxy is set, because in-process resolution would
+    bypass torsocks and leak the operator's resolver — that behaviour is
+    unchanged, and is why proxied runs have never had wordlist enumeration.
+    """
     found = set()
-    wordlist = _wordlist()
-    if _GOBUSTER:
-        out = _run(
-            ["gobuster", "dns", "-d", host, "-w", "-", "-q"]
-            + (utils._proxy_args() if utils._PROXY else []),
-            timeout=90, stdin="\n".join(wordlist),
-        )
-        found = {s.strip().lower() for s in re.findall(r"Found:\s*(\S+)", out)}
-        if wildcard and wildcard_ip:
-            found = {s for s in found if _resolve_a(s) != wildcard_ip}
-        return found
     if utils._PROXY:
         # In-process resolution would bypass torsocks and leak DNS — skip it.
         return found
+
+    wordlist = _wordlist()
 
     def _probe(word):
         name = f"{word}.{host}"
@@ -1109,24 +1256,28 @@ def _phase_passive_subs(host):
     result = {}
     passive_subs, passive_ips = set(), set()
     sources = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         sf_f = pool.submit(_subfinder, host)
         crt_f = pool.submit(_crt_subs, host)
         ht_f = pool.submit(_hackertarget_subs, host)
         cs_f = pool.submit(_certspotter_subs, host)
         wb_f = pool.submit(_wayback_cdx, host)
+        rd_f = pool.submit(_rapiddns, host)
         sf = _future_result(sf_f, set())
         crt = _future_result(crt_f, set())
         ht_subs, ht_ips = _future_result(ht_f, (set(), set()))
         cs = _future_result(cs_f, set())
-        wb = _future_result(wb_f, {"subs": set(), "first": "", "last": "", "count": 0})
+        wb = _future_result(wb_f, {"subs": set(), "paths": set(), "first": "",
+                                   "last": "", "count": 0})
+        rd_subs, rd_rows = _future_result(rd_f, (set(), []))
 
-    passive_subs |= sf | crt | ht_subs | cs | wb.get("subs", set())
-    passive_ips |= ht_ips
+    passive_subs |= sf | crt | ht_subs | cs | rd_subs | wb.get("subs", set())
+    passive_ips |= ht_ips | {ip for _n, ip, _t, _d in rd_rows}
     sources["subfinder"] = len(sf)
     sources["crt_sh"] = len(crt)
     sources["hackertarget"] = len(ht_subs)
     sources["certspotter"] = len(cs)
+    sources["rapiddns"] = len(rd_subs)
     sources["wayback"] = len(wb.get("subs", set()))
 
     if passive_subs:
@@ -1139,7 +1290,7 @@ def _phase_passive_subs(host):
             # Names corroborated by more than one source go through the
             # resolution filter first, so a capped run keeps the best evidence.
             seen = {}
-            for group in (sf, crt, ht_subs, cs, wb.get("subs", set())):
+            for group in (sf, crt, ht_subs, cs, rd_subs, wb.get("subs", set())):
                 for n in group:
                     seen[n] = seen.get(n, 0) + 1
             before = len(passive_subs)
@@ -1155,6 +1306,7 @@ def _phase_passive_subs(host):
     result["_sources"] = sources
     result["_crt"] = crt
     result["_wb"] = wb
+    result["_pdns"] = rd_rows
     return result
 
 
@@ -1288,20 +1440,62 @@ def _phase_whois(host):
     return result
 
 
-def _phase_dirs(host):
-    """Directory brute-force (gobuster, SecLists wordlist when available)."""
+def _phase_urlscan(host):
+    """Passive page observations and third-party references, via urlscan.io."""
+    try:
+        return _urlscan(host)
+    except Exception:
+        return {}
+
+
+def _phase_dirs(paths):
+    """Directory paths recovered from the Wayback index, for the target host.
+
+    This replaces gobuster's ``dir`` brute-force, and it is a better source for
+    the same data type rather than merely a passive substitute. A gobuster hit is
+    a wordlist guess that happened to return a status code; an archived path is
+    a URL that genuinely existed. The trade is coverage — the archive only knows
+    what a crawler reached — and the win is that nothing is sent to the target.
+
+    Reported as the distinct first path segment (``/admin``, ``/api``) plus a
+    capped sample of full paths, because "directories" was always a coarse
+    summary and 3,000 full paths is not one.
+    """
     result = {}
-    if _check_tool("gobuster", _GOBUSTER):
-        wordlist = _dir_wordlist()
-        gb_out = _run(
-            ["gobuster", "dir", "-u", f"https://{host}", "-w", "-", "-q", "-t", "20", "-k"]
-            + (utils._proxy_args() if utils._PROXY else []),
-            timeout=120, stdin="\n".join(wordlist),
-        )
-        dirs = sorted(set(re.findall(r"/(\S+)\s+\(Status:\s*\d+\)", gb_out)))
-        if dirs:
-            result["directories"] = dirs
+    if not paths:
+        return result
+    segments, full = set(), set()
+    for p in paths:
+        if _usable_path(p):
+            full.add(p)
+            head = "/" + p.lstrip("/").split("/", 1)[0]
+            if len(head) > 1:
+                segments.add(head)
+    if segments:
+        result["directories"] = sorted(segments)[:120]
+    if full:
+        sample = sorted(full, key=lambda s: (len(s), s))
+        result["archived_paths"] = sample[:40]
+        if len(sample) > 40:
+            result["archived_paths_note"] = f"showing 40 of {len(sample)}"
     return result
+
+
+# A path segment long enough to be a filename is not a directory, and an archive
+# is full of them. Without a ceiling one long non-ASCII filename becomes the only
+# entry in `directories`, which is worse than reporting nothing: it looks like a
+# finding and is not one. 64 covers every real directory name and excludes the
+# escaped-URL blobs that percent-decoding can produce.
+_MAX_SEGMENT = 64
+
+
+def _usable_path(path):
+    """True if a path's first segment is short and plausible as a directory."""
+    head = path.lstrip("/").split("/", 1)[0]
+    if not head or len(head) > _MAX_SEGMENT:
+        return False
+    # A segment with no alphanumeric content is punctuation, not a name.
+    return any(ch.isalnum() for ch in head)
 
 
 def _phase_active_brute(host, wild, wild_ip):
@@ -1312,7 +1506,13 @@ def _phase_active_brute(host, wild, wild_ip):
 
 
 def _phase_shodan_ports(ips):
-    """Shodan + nmap port scan + reverse DNS + adjacent-host sweep."""
+    """Shodan CLI + InternetDB ports + reverse DNS + adjacent-host sweep.
+
+    The Shodan CLI half needs an API key and contributes Org/ISP/Country, which
+    nothing else in this phase provides. The InternetDB half is keyless and
+    carries the port list, so ports are reported even when the CLI is
+    unconfigured — which is the common case.
+    """
     result = {}
     if ips and _check_tool("shodan", _SHODAN):
         shodan_data = []
@@ -1351,26 +1551,36 @@ def _phase_shodan_ports(ips):
                 shodan_data.append(f"{ip}: No Shodan data")
         result["shodan"] = shodan_data
 
-    if ips and _check_tool("nmap", _NMAP):
-        ports_data = []
-        for ip in ips[:1]:
-            nm = _run(["nmap", "--top-ports", "50", "-sV", "-T4", "--open",
-                       ip, "-oG", "-"], timeout=90)
-            ports = re.findall(r"(\d+)/(open|filtered)/tcp//([^/]*?)//([^/]*?)", nm)
+    # Replaces an `nmap --top-ports 50 -sV` pass. InternetDB is keyless, so this
+    # works where the Shodan CLI did not, and it does not touch the target.
+    #
+    # What is genuinely lost: nmap's `-sV` read the banner off the live socket
+    # and reported a service *and version* per port ("80/tcp Apache httpd
+    # 2.4.41"). InternetDB reports the port list and the host's CPEs, which
+    # identifies the product but not its build. Nothing downstream depended on
+    # the version — cve.py is fed headers and body only, never port-scan output,
+    # so no CVE coverage moves.
+    if ips:
+        netdb = []
+        for ip in ips[:3]:
+            data = _http_json(f"https://internetdb.shodan.io/{ip}", timeout=20)
+            if not isinstance(data, dict) or ("detail" in data and "ip" not in data):
+                netdb.append(f"{ip}: no InternetDB record")
+                continue
+            bits = []
+            ports = [p for p in (data.get("ports") or []) if isinstance(p, int)]
             if ports:
-                parts = []
-                for p, st, sv, pr in ports:
-                    if pr:
-                        parts.append(f"{p}/{sv} ({pr})")
-                    elif sv:
-                        parts.append(f"{p}/{sv}")
-                    else:
-                        parts.append(p)
-                ports_data.append(f"{ip}: {', '.join(parts)}")
-            else:
-                ports_data.append(f"{ip}: No open ports found")
-        if ports_data:
-            result["port_scan"] = ports_data
+                bits.append("ports: " + ", ".join(str(p) for p in sorted(ports)[:25]))
+            cpes = [c for c in (data.get("cpes") or []) if isinstance(c, str)]
+            if cpes:
+                bits.append("product: " + ", ".join(cpes[:3]))
+            tags = [t for t in (data.get("tags") or []) if isinstance(t, str)]
+            if tags:
+                bits.append("tags: " + ", ".join(sorted(tags)[:6]))
+            netdb.append(f"{ip}: {' | '.join(bits)}" if bits
+                         else f"{ip}: no ports recorded")
+        if netdb:
+            result["internetdb"] = netdb
 
     if ips:
         try:
@@ -1403,13 +1613,17 @@ def _collect(target, vulns=True, nvd_key=None, cve_cap=3):
     body = _http_body(f"https://{host}")
 
     # Stage 1 — independent phases run concurrently.
+    #
+    # `_phase_dirs` is no longer in this pool: it derives its paths from the
+    # Wayback CDX result, which arrives with `subs`, so it has to run after
+    # stage 1 rather than alongside it.
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         dns_f = pool.submit(_phase_dns, host)
         subs_f = pool.submit(_phase_passive_subs, host)
         fp_f = pool.submit(_phase_fingerprint, host, headers, body)
         content_f = pool.submit(_phase_content, host, body)
         whois_f = pool.submit(_phase_whois, host)
-        dirs_f = pool.submit(_phase_dirs, host)
+        us_f = pool.submit(_phase_urlscan, host)
         if vulns:
             vn_f = pool.submit(_phase_vulns, headers, body, nvd_key, cve_cap)
         else:
@@ -1419,10 +1633,10 @@ def _collect(target, vulns=True, nvd_key=None, cve_cap=3):
         fp = _future_result(fp_f, {})
         content = _future_result(content_f, {})
         whois = _future_result(whois_f, {})
-        dirs = _future_result(dirs_f, {})
+        uscan = _future_result(us_f, {})
         vn = _future_result(vn_f, {}) if vn_f else {}
 
-    for phase in (dns, subs, fp, content, whois, dirs, vn):
+    for phase in (dns, subs, fp, content, whois, uscan, vn):
         for key, value in phase.items():
             if not key.startswith("_"):
                 result[key] = value
@@ -1456,6 +1670,25 @@ def _collect(target, vulns=True, nvd_key=None, cve_cap=3):
     wb = subs.get("_wb", {})
     if wb.get("subs"):
         result["wayback_subdomains"] = sorted(wb["subs"])
+    # Historical resolutions: what each name pointed at, and when anyone last
+    # saw it. This is the "is this still dangling" check that live resolution
+    # cannot answer, and it is a set rather than a scalar so `cases diff` sees a
+    # changed address as what it is.
+    rows = subs.get("_pdns") or []
+    if rows:
+        by_host = {}
+        for name, ip, rrtype, seen in rows:
+            by_host.setdefault(name, []).append(
+                {"ip": ip, "type": rrtype, "last_seen": seen})
+        result["passive_dns"] = {
+            "hosts": len(by_host),
+            "records": len(rows),
+            "resolved": {k: v for k, v in sorted(by_host.items())},
+        }
+    # Archived-path directories, now that the CDX result is in hand.
+    dirs = _phase_dirs(wb.get("paths") or set())
+    if dirs:
+        result.update(dirs)
 
     # Stage 3 — httpx probing of all discovered subdomains.
     if all_subs and _HTPPX:

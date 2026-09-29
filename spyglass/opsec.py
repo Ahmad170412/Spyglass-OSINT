@@ -114,7 +114,7 @@ def _check_tor_tools():
     recs = []
     if not utils._PROXY:
         return None
-    for name, path in [("nmap", utils._NMAP), ("dig", utils._DIG), ("whois", utils._WHOIS)]:
+    for name, path in [("dig", utils._DIG), ("whois", utils._WHOIS)]:
         if path and not utils._TORSOCKS:
             recs.append(f"{name} found but not Tor-safe — install torsocks to route it")
     return recs if recs else None

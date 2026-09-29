@@ -1,30 +1,30 @@
 """Shared import helper for the test suite.
 
-The package directory name contains a dash, so a plain ``import <pkg>.email`` is
-a syntax error. importlib handles the name fine, so every test imports through
-``imp()``.
+Spyglass is now a properly-named package (``spyglass/``) with a real
+distribution on PyPI, so the importlib indirection this file used to need is
+mostly historical. It is kept because two things still depend on it:
 
-The package name is discovered from the filesystem rather than hardcoded. The
-checkout has been renamed more than once — it has been ``TEMP`` and
-``Spyglass-OSINT`` in the same session — and a hardcoded name turns every rename
-into a silently empty test run (``Ran 0 tests``) rather than an obvious failure.
+* ``tests/`` is deliberately *not* part of the installed distribution, so the
+  suite has to put the repository root on ``sys.path`` itself rather than
+  relying on being run from an installed copy.
+* The package directory is discovered from the filesystem rather than
+  hardcoded, so a renamed checkout does not turn every test into a silent
+  ``Ran 0 tests``.
 
-We also scrub ``sys.path``: if the tests are run from *inside* the package
-directory, that directory lands on ``sys.path`` and its ``email_recon.py``
-sits alongside the stdlib ``email`` import that urllib performs internally.
-Importing strictly through the parent directory avoids the class of collision.
+The name also has to be *valid* now, not merely importable by importlib. The
+checkout used to be ``Spyglass-OSINT``, which a plain ``import`` statement
+cannot even name.
 """
 
 import importlib
 import os
 import sys
 
-# The package directory (the one holding __init__.py and utils.py).
-_PKG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+# The repository root: the directory holding pyproject.toml.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# The directory that *contains* it — the only place the package is importable by
-# name, since ``python -m <pkg>`` and ``import <pkg>`` both resolve from here.
-_ROOT = os.path.dirname(_PKG_DIR)
+# The package directory (the one holding __init__.py and utils.py).
+_PKG_DIR = os.path.join(_ROOT, "spyglass")
 
 # Discover the real package name: it is the basename of the package directory.
 _PKG = os.path.basename(_PKG_DIR)
@@ -32,8 +32,10 @@ _PKG = os.path.basename(_PKG_DIR)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-# Never leave the package directory itself on the path: its module filenames
-# would shadow same-named standard-library modules.
+# Never leave the package directory itself on the path. Its module filenames
+# are plain names — ``phone``, ``report``, ``store`` — and several of them
+# shadow real modules other packages import. ``email_recon`` exists for exactly
+# this reason; the guard below stops the next one being an accident.
 sys.path[:] = [
     p for p in sys.path
     if p != "" and os.path.abspath(p) != _PKG_DIR

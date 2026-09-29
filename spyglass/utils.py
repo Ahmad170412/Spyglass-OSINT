@@ -37,7 +37,7 @@ def _proxy_prefix(cmd):
     if not _PROXY or not cmd:
         return cmd
     base = os.path.basename(cmd[0])
-    if base in {"dig", "nmap", "whois"} and _TORSOCKS:
+    if base in {"dig", "whois"} and _TORSOCKS:
         return [_TORSOCKS] + cmd
     return cmd
 
@@ -121,15 +121,25 @@ if not _BB:
             break
 
 _DIG = _which("dig")
-_NMAP = _which("nmap")
-_GOBUSTER = _which("gobuster")
 _HTPPX = _which("httpx")
 _WHOIS = _which("whois")
 _CURL = _which("curl")
 _SHODAN = _which("shodan")
 _EXIFTOOL = _which("exiftool")
 _SUBFINDER = _which("subfinder")
-_NUCLEI = _which("nuclei")
+
+# Removed in the passive-only pass: _NMAP, _GOBUSTER and _NUCLEI.
+#
+# _NUCLEI was dead — a _which() probe for a tool nothing in the package ever
+# called, which implied a capability the tool did not have. nuclei is a
+# template-driven vulnerability scanner: it actively probes the target, which is
+# a different tool class from what this does. The CVE story is the opposite —
+# detect a version passively from a header or body, ask NVD, re-verify the hit
+# against the range NVD itself recorded, and err toward silence.
+#
+# _NMAP and _GOBUSTER did real work and were removed deliberately. Open ports
+# survive via Shodan (already queried, already displayed); see ip.py and
+# website.py for what was given up and why it costs less than it looks.
 
 
 # ─── network helpers ──────────────────────────────────────

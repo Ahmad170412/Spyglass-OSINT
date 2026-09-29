@@ -98,7 +98,13 @@ def api_modules():
     which reads as "United States only"), and a console that prettifies keys
     client-side invents its own wording that then disagrees with the CLI.
     """
-    from modules import MODULES
+    # Relative, like every other import in the package. This was a bare
+    # ``from modules import MODULES``, which resolved only because running
+    # ``python webapp.py`` puts the script's own directory on sys.path. As soon
+    # as the console was imported rather than executed — ``python -m`` from an
+    # installed wheel, a WSGI server, or the test suite — ``modules`` was not a
+    # top-level name and the route returned a 500.
+    from .modules import MODULES
     return jsonify({
         "modules": MODULES,
         "labels": {
@@ -200,7 +206,21 @@ def api_ip():
     if err:
         return err
     try:
-        return jsonify(_mod("ip").address(target, data.get("top_ports")))
+        # No top_ports: it tuned the nmap scan, which is gone. Ports come from
+        # InternetDB and are not tunable by the caller.
+        return jsonify(_mod("ip").address(target))
+    except Exception as exc:
+        return _fail(exc)
+
+
+@app.post("/api/asn")
+def api_asn():
+    data = _body()
+    target, err = _need(data.get("target"))
+    if err:
+        return err
+    try:
+        return jsonify(_mod("asn").asn(target))
     except Exception as exc:
         return _fail(exc)
 
@@ -236,4 +256,27 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Two ways in, and they need different bootstrapping:
+    #
+    #   python -m spyglass.webapp   works directly — the package context is
+    #                                established by -m, so relative imports
+    #                                inside the route handlers resolve.
+    #   python spyglass/webapp.py    does not: a script run sets __name__ to
+    #                                "__main__" with no parent package, so every
+    #                                `from .x import y` inside a handler raises
+    #                                "attempted relative import with no known
+    #                                parent package" — at request time, not
+    #                                import time, which is why the console would
+    #                                boot and then 500 on its own first request.
+    #
+    # Putting the *parent* of the package on sys.path and re-importing under the
+    # real name gives the handlers the package context they need. Prefer -m.
+    import os as _os
+    import sys as _sys
+
+    _parent = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    if _parent not in _sys.path:
+        _sys.path.insert(0, _parent)
+    from spyglass.webapp import main as _main  # noqa: E402  (needs the path above)
+
+    _main()

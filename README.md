@@ -6,12 +6,12 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![OSINT](https://img.shields.io/badge/OSINT-recon-purple)](https://github.com/Ahmad170412/Spyglass-OSINT)
 [![Tools](https://img.shields.io/badge/tools-20%2B-orange)](https://github.com/Ahmad170412/Spyglass-OSINT)
-[![Modules](https://img.shields.io/badge/modules-9-success)](https://github.com/Ahmad170412/Spyglass-OSINT)
+[![Modules](https://img.shields.io/badge/modules-10-success)](https://github.com/Ahmad170412/Spyglass-OSINT)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](https://github.com/Ahmad170412/Spyglass-OSINT)
 
 Hey there. OSINT usually means juggling 15 different tools across 5 terminals, each with its own output format, its own flags, its own way of doing things. Spyglass fixes that.
 
-It wraps **holehe, user-scanner, sherlock, maigret, blackbird, PhoneInfoga, Ignorant, Shodan, nmap, dig, whois, curl, gobuster, httpx, exiftool, LeakCheck, Scylla, ip-api.com, crt.sh, HackerTarget, CertSpotter, the Wayback Machine, Ahmia, and Pwned Passwords** into a **single, unified CLI** — one interface, one output format, one place to run everything.
+It wraps **holehe, user-scanner, sherlock, maigret, blackbird, PhoneInfoga, Ignorant, Shodan InternetDB, urlscan.io, dig, whois, curl, subfinder, httpx, exiftool, LeakCheck, Scylla, ip-api.com, ipwho.is, RIPEStat, crt.sh, CertSpotter, HackerTarget, RapidDNS, the Wayback Machine, Ahmia, and Pwned Passwords** into a **single, unified CLI** — one interface, one output format, one place to run everything.
 
 No more context switching. No more copy-pasting between tools. Just pick a target and go.
 
@@ -19,7 +19,23 @@ No more context switching. No more copy-pasting between tools. Just pick a targe
 
 ## 🔭 Quick start
 
-**One command (recommended):**
+**pip (recommended):**
+
+```bash
+pip install spyglass-osint
+spyglass --help
+```
+
+Spyglass ships the recon engines as extras so a plain install stays light. Add
+what you actually need:
+
+```bash
+pip install "spyglass-osint[all]"    # engines + web console + metadata formats
+pip install "spyglass-osint[tools]"  # holehe, sherlock, maigret, blackbird's peers
+pip install "spyglass-osint[web]"    # the Flask console
+```
+
+**With the external tools** (dig, subfinder, httpx, torsocks, exiftool, the Shodan CLI, blackbird):
 
 ```bash
 git clone https://github.com/Ahmad170412/Spyglass-OSINT.git
@@ -29,25 +45,59 @@ cd Spyglass-OSINT
 
 `setup.sh` installs the external tools (brew on macOS, apt on Debian/Ubuntu), creates a venv with the Python tool packages, clones blackbird, and adds a `spyglass` launcher to `~/.local/bin`. It's safe to re-run.
 
-**Manual:**
+**From a checkout, no install:**
 
 ```bash
 cd Spyglass-OSINT
-pip install -r requirements.txt
-cd ..          # -m needs the directory that *contains* the package
-python -m Spyglass-OSINT
+python -m spyglass --help
 ```
 
-> The package name is the checkout directory name, so it must match. It is also
-> not a valid Python identifier, which is why every invocation goes through
-> `python -m <dir-name>` rather than a plain `import`. That also means it has to
-> run from the *parent* of the checkout — `python -m Spyglass-OSINT` from inside
-> the directory fails with `No module named`, which is expected rather than a
-> broken install. The `spyglass` launcher from `setup.sh` has no such constraint.
-> Renaming the checkout is supported; the test suite reads the name from the
-> filesystem and follows a rename without edits.
+> The import package is `spyglass/` and the distribution is `spyglass-osint` —
+> they do not have to match, and the checkout directory name is irrelevant. An
+> installed copy gives you the `spyglass` command, `python -m spyglass`, and
+> `import spyglass` for library use. The test suite discovers the package from
+> the filesystem, so a renamed checkout needs no edits.
 
 Pick a module from the menu and go. If something's missing, the tool tells you what to install.
+
+---
+
+## 🔭 Passive by default
+
+Spyglass does not probe the target unless a line in this README says otherwise.
+No port scanning, no directory brute-forcing, no vulnerability templates. Every
+data point is something that was **already published or already scanned by
+someone else** — certificate transparency logs, passive DNS, web archives,
+breach corpora, RIPEStat, and Shodan's InternetDB.
+
+That has one consequence worth stating plainly, because it changes how a result
+should be read: **the ports and services reported are a historical record, not a
+live measurement.** A closed port and a port that was open last month look
+identical. Two passive probes remain and are both opt-in by omission, not by
+flag: a wordlist DNS resolve for subdomains (skipped automatically when a proxy
+is set, so it cannot leak your resolver) and an AXFR zone-transfer attempt.
+
+### Passive DNS, and what urlscan adds
+
+`RapidDNS` is the only source here that answers *what did this name resolve to,
+and when did anyone last see it*. Every other subdomain source answers "what
+names are published somewhere". That difference is what surfaces a host still
+pointing at a former owner's cloud bucket, and it is reported per name with its
+last-seen date so a record that has not moved in four years is visible as one.
+
+`urlscan.io` contributes three things nothing else here produces: addresses and
+ASNs that someone else's crawler saw, with a timestamp; **historical `Server`
+headers**, which is a passive tech fingerprint and matters most when the live one
+is hidden behind a CDN; and `referenced_by` — pages that *link to* the target.
+Those are reported separately and never counted as assets, because a site
+mentioning you is not infrastructure you control.
+
+`ipwho.is` is a second geolocation opinion. `ip-api.com` used to be the only
+source, so a rate-limit or an outage silently removed the entire geo block with
+no signal anything had failed. The source now travels with the answer, because
+the two genuinely disagree: on `8.8.8.8` ip-api.com says Ashburn, Virginia and
+ipwho.is says San Jose, California, on opposite timezones. Both agree on
+AS15169.
 
 ---
 
@@ -58,8 +108,9 @@ Pick a module from the menu and go. If something's missing, the tool tells you w
 | `email` | Where is this email registered? Any breaches? Any public identity? | holehe + user-scanner + blackbird + Gravatar + LeakCheck + Scylla |
 | `username` | Which platforms have this profile? | user-scanner + sherlock + maigret + blackbird |
 | `phone` | Who owns this number? Carrier? Region? Any footprints? | phonenumbers + PhoneInfoga + Ignorant |
-| `website` | Deep recon: DNS, subdomains, ports, headers, tech stack, TLS, content, WHOIS, history, **known CVEs** | dig + curl + nmap + whois + gobuster + crt.sh + HackerTarget + CertSpotter + Wayback CDX + Shodan + NVD |
-| `ip` | Where is this IP? Reverse DNS? Open ports? | ip-api.com + dig + whois + Shodan + nmap |
+| `website` | Deep recon: DNS, subdomains, **passive DNS history**, ports, headers, tech stack, TLS, content, WHOIS, history, **known CVEs** | dig + curl + whois + subfinder + crt.sh + CertSpotter + HackerTarget + RapidDNS + Wayback CDX + urlscan.io + InternetDB + Shodan + NVD |
+| `ip` | Where is this IP? Reverse DNS? Open ports? | ip-api.com + **ipwho.is** + dig + whois + InternetDB |
+| `asn` | Who routes this address? Is the route hijackable? | RIPEStat (prefix-overview + as-overview + RPKI) |
 | `metadata` | What's hidden in this file? GPS, camera, document author? | exiftool + Pillow + PyPDF2 + python-docx/openpyxl |
 | `darkweb` | Search the .onion index; check breaches and breached passwords | Ahmia + Pwned Passwords + LeakCheck + Scylla (+ IntelX / HIBP optional) |
 | `opsec` | Am I leaking my real IP? Is my proxy working? | dig + curl + ip-api.com + torsocks |
@@ -68,7 +119,7 @@ Pick a module from the menu and go. If something's missing, the tool tells you w
 
 `website` goes well beyond the old "DNS + headers" pass:
 
-- **Subdomain discovery** — subfinder (52 passive sources) plus crt.sh, HackerTarget, CertSpotter and the Wayback Machine CDX index, then active wordlist brute (gobuster, or a native resolver), wildcard-DNS detection, and an AXFR zone-transfer attempt.
+- **Subdomain discovery** — subfinder (52 passive sources) plus crt.sh, CertSpotter, HackerTarget and the Wayback Machine CDX index, then a wordlist DNS resolve in-process, wildcard-DNS detection, and an AXFR zone-transfer attempt.
   Every passively-discovered name is **DNS-resolved before it is reported**. This matters more than the source count: subfinder returns 22,250 names for `example.com` and they are almost entirely certificate-log and archive entries for hostnames that were never live. Unfiltered that is noise; filtered, the same target reports 1. A canary probe suppresses the list entirely on a wildcard domain, and the resolution pass is capped at 1,500 lookups with the remainder reported as unchecked rather than dropped.
 - **Fingerprinting** — security-headers audit, cookie-flag analysis, CSP domain extraction, ~40-signature tech-stack detection, a Shodan-compatible favicon hash, and TLS certificate analysis (subject, issuer, SANs, expiry, version, cipher).
 - **Known vulnerabilities** — the fingerprint phase now captures *versions*, not just product names, and asks the NVD which published CVEs actually cover them. Reports severity, CVSS score, affected range, and references. Opt out with `--no-vulns`, widen with `--cve-cap N`, or supply `--nvd-key KEY` to lift the rate limit.
@@ -128,10 +179,15 @@ the terminal calls and returns the same dict, so the browser can never see a
 shape the CLI cannot.
 
 ```bash
-pip install flask
-python webapp.py                 # http://127.0.0.1:5000
-python webapp.py --port 8080
+pip install "spyglass-osint[web]"
+python -m spyglass.webapp                # http://127.0.0.1:5000
+python -m spyglass.webapp --port 8080
 ```
+
+Prefer `python -m spyglass.webapp` over `python spyglass/webapp.py`. Both work,
+but the script form has to re-establish the package context by hand before the
+route handlers' relative imports resolve, and it is the form that breaks first
+if anything moves.
 
 The module list lives in `modules.py` and is served to the page over
 `/api/modules`, so a tab cannot exist for a module that is not in the CLI. Adding
@@ -156,6 +212,48 @@ NVD lookup can exceed a minute once rate limiting is accounted for.
 
 Two optional, keyed layers (skipped cleanly unless the env var is set): **IntelX** (`INTELX_API_KEY`, free tier) and **HaveIBeenPwned** (`HIBP_API_KEY`). The keyless path works out of the box.
 
+### The ASN module, and what RPKI actually tells you
+
+`asn` fills the layer between `ip` and `website`. `ip` answers "where is this
+address", `website` answers "what is running there", and neither can say *who
+routes it* — which is what decides whether an address belongs to the target, to
+its host, or to a transit provider three hops away. It takes an IP, a CIDR
+prefix, or an AS number in one argument:
+
+```bash
+spyglass asn 1.1.1.1        # covering prefix, origin AS, RPKI
+spyglass asn 1.1.1.0/24
+spyglass asn AS13335
+```
+
+Everything is a keyless GET against RIPEStat, so there is nothing to configure.
+
+**The interesting output is RPKI, and it is worth reading precisely.** A route
+whose origin AS has a matching ROA (*Route Origin Authorization*) is
+**protected**: an upstream that receives a conflicting announcement will reject
+it. A route reported `invalid` has a ROA that names a **different** origin —
+that is what a route hijack looks like. It is the only finding in Spyglass that
+reports a *weakness* rather than a fact about the target.
+
+Three things it deliberately does not do:
+
+- **It never calls "no ROA" safe.** `valid`, `invalid` and `unknown` are kept
+  distinct, and the summary sorts worst-first so a conflicting ROA is not buried
+  under the prefixes that are fine. Absence of RPKI data is not evidence of
+  safety.
+- **An AS-only query returns no RPKI result, and says why.** Validation is
+  defined per prefix against an origin, so an AS on its own has nothing to
+  validate. Answering "valid" there would be the one result in this tool that
+  looks like a safety verdict and is not one.
+- **It reports the announced footprint as a size, not a list.** AS15169 announces
+  1,415 prefixes and Cloudflare 5,484 — printing those is not reconnaissance. The
+  sample is capped and biased toward the address family you asked about, and the
+  true total is always shown.
+
+The holder is indexed as an `org` entity, which is the same organisation string
+WHOIS produces — so an `asn` run and a `website` run on the same operator land on
+a shared value, and a cross-module `cases diff` can connect them.
+
 ### Why you'd use this
 
 Spyglass isn't another OSINT tool — it's a **unified command center** for the ones that already exist.
@@ -171,18 +269,18 @@ Spyglass isn't another OSINT tool — it's a **unified command center** for the 
 
 ## 🔭 Usage
 
-All examples below assume you are in the directory that *contains* the checkout
-(see the note in Quick start), or that you are using the `spyglass` launcher.
+All examples below use the `spyglass` command from an installed copy. From a
+checkout, use `python -m spyglass` from the repository root instead.
 
 ### Interactive menu
 
 ```bash
-python -m Spyglass-OSINT
+spyglass
 ```
 
 ```
   [1]  Identity              (email, username, phone, dark web)
-  [2]  Infrastructure        (website, IP)
+  [2]  Infrastructure        (website, IP, ASN)
   [3]  Utilities             (OPSEC, metadata, help, clear)
   [4]  Exit
 
@@ -194,21 +292,21 @@ Each sub-menu has a **Back** option to return here.
 ### One-shot commands
 
 ```bash
-python -m Spyglass-OSINT email user@example.com
-python -m Spyglass-OSINT ip 1.1.1.1 --json --proxy socks5://127.0.0.1:9050
-python -m Spyglass-OSINT username johndoe --csv
-python -m Spyglass-OSINT website example.com --report
+spyglass email user@example.com
+spyglass ip 1.1.1.1 --json --proxy socks5://127.0.0.1:9050
+spyglass username johndoe --csv
+spyglass website example.com --report
 ```
 
-Works with: `email`, `username`, `phone`, `website`, `ip`, `metadata`, `darkweb`, `opsec`.
+Works with: `email`, `username`, `phone`, `website`, `ip`, `asn`, `metadata`, `darkweb`, `opsec`.
 
 ### Known-vulnerability lookup
 
 ```bash
-python -m Spyglass-OSINT website example.com                # CVEs on by default
-python -m Spyglass-OSINT website example.com --no-vulns     # skip the lookup
-python -m Spyglass-OSINT website example.com --cve-cap 8    # query more products
-python -m Spyglass-OSINT website example.com --nvd-key KEY   # lift the rate limit
+spyglass website example.com                # CVEs on by default
+spyglass website example.com --no-vulns     # skip the lookup
+spyglass website example.com --cve-cap 8    # query more products
+spyglass website example.com --nvd-key KEY   # lift the rate limit
 ```
 
 | Flag | Effect |
@@ -217,23 +315,24 @@ python -m Spyglass-OSINT website example.com --nvd-key KEY   # lift the rate lim
 | `--cve-cap N` | How many products to query (default 3) |
 | `--nvd-key KEY` | NVD API key; raises the rate limit from 5 to 50 per 30s |
 
-Check the version:
+Check the version, or the full flag list:
 
 ```bash
-python -m Spyglass-OSINT --version
+spyglass --version
+spyglass --help
 ```
 
 ### Proxy / Tor
 
 Add `--proxy socks5://127.0.0.1:9050` to any command (or set env var `ALL_PROXY`).
-Spyglass routes dig, nmap, and whois through `torsocks` automatically.
+Spyglass routes dig and whois through `torsocks` automatically.
 The OPSEC module can verify your proxy is actually hiding you.
 
 ### Dark web search
 
 ```bash
-python -m Spyglass-OSINT darkweb user@example.com
-python -m Spyglass-OSINT darkweb example.com --type domain --report
+spyglass darkweb user@example.com
+spyglass darkweb example.com --type domain --report
 ```
 
 The target type (`email`, `username`, `phone`, `domain`, or `ip`) is auto-detected, or set it explicitly with `--type`.
@@ -241,15 +340,15 @@ The target type (`email`, `username`, `phone`, `domain`, or `ip`) is auto-detect
 Check whether a password has been breached (read from the terminal, never stored):
 
 ```bash
-python -m Spyglass-OSINT darkweb --password
+spyglass darkweb --password
 ```
 
 ### Export & reports
 
 ```bash
-python -m Spyglass-OSINT email user@example.com --json
-python -m Spyglass-OSINT ip 1.1.1.1 --csv
-python -m Spyglass-OSINT website example.com --report
+spyglass email user@example.com --json
+spyglass ip 1.1.1.1 --csv
+spyglass website example.com --report
 ```
 
 `--json` and `--csv` save a timestamped data file; `--report` writes a human-readable Markdown dossier in the current directory. All three can be combined.
@@ -259,11 +358,11 @@ python -m Spyglass-OSINT website example.com --report
 Add `--store` to any query to persist the result to a local SQLite case store (default `~/.spyglass`, override with `SPYGLASS_HOME`). The store keeps a full JSON snapshot per run plus an entity index, which powers time-series queries:
 
 ```bash
-python -m Spyglass-OSINT website example.com --store   # store a run
-python -m Spyglass-OSINT cases list                    # every stored target
-python -m Spyglass-OSINT cases diff example.com --type website   # added/removed entities
-python -m Spyglass-OSINT cases timeline example.com    # change history
-python -m Spyglass-OSINT cases export example.com      # stable JSON profile
+spyglass website example.com --store   # store a run
+spyglass cases list                    # every stored target
+spyglass cases diff example.com --type website   # added/removed entities
+spyglass cases timeline example.com    # change history
+spyglass cases export example.com      # stable JSON profile
 ```
 
 The store is **opt-in** — nothing is written to disk unless you pass `--store` (recon results are sensitive; ephemeral-by-default is a deliberate choice).
@@ -274,31 +373,65 @@ The store is **opt-in** — nothing is written to disk unless you pass `--store`
 
 ```
 Spyglass-OSINT/
-├── __main__.py          CLI entry — state machine, arg parser, menu dispatch
-├── display.py           Rich TUI — banner, prompts, show_* functions
-├── utils.py             Proxy system, tool paths, subprocess runner, extraction helpers
-├── email_recon.py        Email recon (named to avoid shadowing stdlib `email`)
-├── username.py          Username recon
-├── phone.py             Phone recon
-├── website.py           Website recon (subdomains, fingerprinting, content, history, CVEs)
-├── cve.py               NVD version-to-CVE matching for detected components
-├── webapp.py           Flask web console
-├── modules.py           Module registry shared by the console and its API
-├── index.html           Web console front end
-├── ip.py                IP recon
-├── metadata.py          Metadata extraction
-├── darkweb.py           Dark web index search + breach/password checks
-├── breach.py            Breach checking — LeakCheck + Scylla
-├── opsec.py             OPSEC health check
-├── export.py            JSON / CSV export
-├── report.py            Markdown dossier generation (--report)
-├── store.py             SQLite case store (--store, cases diff/timeline/export)
-├── tests/               Unit tests (stdlib unittest, no network needed)
-├── requirements.txt     Python dependencies
-├── README.md            This file
-├── LICENSE              MIT license
-└── .gitignore           Git ignore rules
+├── pyproject.toml        Packaging — distribution metadata, deps, the `spyglass` command
+├── spyglass/             The import package
+│   ├── __main__.py       CLI entry — state machine, arg parser, menu dispatch
+│   ├── display.py        Rich TUI — banner, prompts, show_* functions
+│   ├── utils.py          Proxy system, tool paths, subprocess runner, extraction helpers
+│   ├── email_recon.py    Email recon (named to avoid shadowing stdlib `email`)
+│   ├── username.py       Username recon
+│   ├── phone.py          Phone recon
+│   ├── website.py        Website recon (subdomains, fingerprinting, content, history, CVEs)
+│   ├── cve.py            NVD version-to-CVE matching for detected components
+│   ├── webapp.py         Flask web console
+│   ├── modules.py        Module registry shared by the console and its API
+│   ├── index.html        Web console front end (packaged as package data)
+│   ├── ip.py             IP recon
+│   ├── asn.py            BGP / routing recon (prefix, origin AS, RPKI validity)
+│   ├── metadata.py       Metadata extraction
+│   ├── darkweb.py        Dark web index search + breach/password checks
+│   ├── breach.py         Breach checking — LeakCheck + Scylla
+│   ├── opsec.py          OPSEC health check
+│   ├── export.py         JSON / CSV export
+│   ├── report.py         Markdown dossier generation (--report)
+│   └── store.py          SQLite case store (--store, cases diff/timeline/export)
+├── tests/                Unit tests (stdlib unittest, no network needed)
+├── setup.sh              External tools, venv, and the ~/.local/bin launcher
+├── requirements.txt      Reference install list (mirrors the pyproject extras)
+├── CHANGELOG.md          Release history
+├── README.md             This file
+├── LICENSE               MIT license
+└── .gitignore            Git ignore rules
 ```
+
+Run the suite with:
+
+```bash
+python -m unittest discover -s tests -t tests
+```
+
+### Using Spyglass as a library
+
+Every module is an ordinary importable function returning a plain dict, so the
+console and the CLI are both just callers:
+
+```python
+from spyglass.website import website
+from spyglass.asn import asn
+
+print(website("example.com", vulns=False)["subdomains"])
+print(asn("1.1.1.1")["rpki"])
+```
+
+There is no second implementation of any recon logic — `webapp.py` is a
+transport over the same functions, not a reimplementation.
+
+Each module exposes a function of the same name, so import the submodule
+explicitly (`from spyglass.website import website`). `spyglass/__init__.py`
+deliberately re-exports nothing beyond `__version__`: several modules shadow a
+stdlib name, the package stays importable with zero third-party packages
+installed, and `from spyglass import website` would be ambiguous between the
+module and the function it defines.
 
 ---
 
@@ -306,7 +439,7 @@ Spyglass-OSINT/
 
 Python 3.9+ and `pip install -r requirements.txt`. External tools are auto-detected — install whatever modules you need. The tool tells you what's missing.
 
-Spyglass targets **macOS and Linux only** — it leans on POSIX tools (`dig`, `curl`, `whois`, `nmap`, `gobuster`, and friends) that are standard on those platforms. **Windows is not supported.** `curl` is required for the network-based modules.
+Spyglass targets **macOS and Linux only** — it leans on POSIX tools (`dig`, `curl`, `whois`, and friends) that are standard on those platforms. **Windows is not supported.** `curl` is required for the network-based modules.
 
 ---
 

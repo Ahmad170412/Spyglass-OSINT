@@ -396,3 +396,78 @@ class FilterResolvableTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ArchivedPathDirectoriesTest(unittest.TestCase):
+    """`_phase_dirs` replaced gobuster's directory brute-force.
+
+    The failure it has to avoid is reporting archive noise as a finding. The CDX
+    index returns percent-encoded paths, and one real example.com snapshot is a
+    Japanese-language filename; left encoded, that is a several-hundred-character
+    escape sequence that lands in `directories` and reads exactly like a real
+    directory name.
+    """
+
+    def test_groups_paths_into_first_segments(self):
+        out = web._phase_dirs({"/admin", "/admin/login", "/api/v1/users", "/blog/post"})
+        self.assertEqual(out["directories"], ["/admin", "/api", "/blog"])
+
+    def test_a_long_filename_is_not_a_directory(self):
+        long_seg = "/" + ("a" * 300) + ".jpg"
+        out = web._phase_dirs({long_seg, "/admin"})
+        self.assertEqual(out["directories"], ["/admin"])
+        self.assertNotIn(long_seg, out.get("archived_paths", []))
+
+    def test_a_path_with_no_usable_segment_reports_nothing_at_all(self):
+        # Absent, not []. The module omits a finding it has none of, and an
+        # empty list here would read as "we looked and there were no
+        # directories" rather than "nothing survived filtering".
+        self.assertNotIn("directories", web._phase_dirs({"/"}))
+        self.assertNotIn("directories", web._phase_dirs({"/---/x"}))
+
+    def test_empty_input_returns_nothing(self):
+        self.assertEqual(web._phase_dirs(set()), {})
+
+    def test_the_cap_is_reported_rather_than_silent(self):
+        out = web._phase_dirs({f"/p{i}" for i in range(100)})
+        self.assertIn("archived_paths_note", out)
+        self.assertIn("of 100", out["archived_paths_note"])
+        self.assertEqual(len(out["archived_paths"]), 40)
+
+
+class WaybackPathExtractionTest(unittest.TestCase):
+    """`_wayback_cdx` is where decoding happens, so that is where it is tested."""
+
+    @staticmethod
+    def _cdx(*rows):
+        # The real CDX shape: a header row, then one row per capture.
+        return [["timestamp", "original", "statuscode"], *rows]
+
+    def _run(self, *rows):
+        with mock.patch.object(web, "_http_json", return_value=self._cdx(*rows)):
+            return web._wayback_cdx("example.com")
+
+    def test_paths_come_from_the_exact_host_only(self):
+        out = self._run(
+            ["20240101", "http://example.com/admin", "200"],
+            ["20240101", "http://sub.example.com/secret-path", "200"],
+        )
+        self.assertIn("/admin", out["paths"])
+        # A subdomain's layout is not the target's, and folding it in would
+        # attribute another host's directories to the target.
+        self.assertNotIn("/secret-path", out["paths"])
+        self.assertIn("sub.example.com", out["subs"])
+
+    def test_percent_encoded_paths_are_decoded(self):
+        out = self._run(["20240101", "http://example.com/%E6%97%A5%E6%9C%AC%E8%AA%9E/x.jpg", "200"])
+        self.assertIn("/\u65e5\u672c\u8a9e/x.jpg", out["paths"])
+
+    def test_a_unicode_first_segment_survives_as_a_directory(self):
+        out = web._phase_dirs(self._run(
+            ["20240101", "http://example.com/%E6%97%A5%E6%9C%AC%E8%AA%9E/x.jpg", "200"]
+        )["paths"])
+        self.assertEqual(out["directories"], ["/\u65e5\u672c\u8a9e"])
+
+    def test_a_short_response_is_handled(self):
+        with mock.patch.object(web, "_http_json", return_value=[]):
+            self.assertEqual(web._wayback_cdx("example.com")["paths"], set())

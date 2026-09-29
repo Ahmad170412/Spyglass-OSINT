@@ -1,0 +1,28 @@
+# The sdist is built from this directory, and setuptools' default file list
+# covers Python modules and the files named in pyproject.toml. Everything here
+# is either a non-Python file that belongs in a source distribution or an
+# explicit statement that something is deliberately excluded.
+
+include LICENSE
+include README.md
+include CHANGELOG.md
+include requirements.txt
+
+# setup.sh installs the external recon tools (brew/apt) and the venv, and
+# `pip install -e .` on its own does not set those up. Excluding it made an
+# sdist unpacked from a checkout look incomplete.
+include setup.sh
+
+# tests/ ships on purpose: the suite discovers the package from the filesystem,
+# so `python -m unittest discover -s tests -t tests` works from an unpacked
+# sdist. That is also how a downstream packager can run the suite before
+# repackaging.
+recursive-include tests *.py
+
+# Build and cache noise, which the default list already excludes but which is
+# cheap to state given the sdist is what people unpack.
+global-exclude __pycache__/*
+global-exclude *.py[cod]
+prune logs
+prune dist
+prune build

@@ -41,11 +41,11 @@ die()  { printf '%s[x]%s %s\n' "$R" "$Z" "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_PARENT="$(dirname "$REPO_DIR")"
-# The package name IS the checkout directory name, and it is not a valid Python
-# identifier, so every invocation goes through `python -m <name>`. Derive it from
-# the directory rather than hardcoding it, so a renamed checkout keeps working.
-PKG_NAME="$(basename "$REPO_DIR")"
+# The import package is a real, valid identifier now — the checkout directory is
+# not required to match it, and must not be assumed to. It used to be derived
+# from the checkout basename, which only worked because the two always matched;
+# the distribution is `spyglass-osint`, the import package is `spyglass`.
+PKG_NAME="spyglass"
 
 info "Spyglass setup"
 info "Repo: $REPO_DIR"
@@ -91,7 +91,7 @@ else
         || warn "Homebrew install failed — install it manually, then re-run."
     fi
     if have brew; then
-      for t in nmap gobuster torsocks exiftool seclists; do
+      for t in torsocks exiftool seclists subfinder; do
         info "brew install $t"
         if brew install "$t" >/dev/null 2>&1; then ok "  $t"; else warn "  $t failed (optional)"; fi
       done
@@ -104,26 +104,34 @@ else
       [[ "$(id -u)" == "0" ]] || SUDO="sudo"
       info "Installing system tools via apt-get (may prompt for sudo)..."
       $SUDO apt-get update -y >/dev/null || warn "apt-get update failed (continuing)."
-      for t in dnsutils whois nmap gobuster torsocks libimage-exiftool-perl seclists; do
+      for t in dnsutils whois torsocks libimage-exiftool-perl seclists; do
         info "apt-get install $t"
         if $SUDO apt-get install -y "$t" >/dev/null 2>&1; then ok "  $t"; else warn "  $t failed (optional)"; fi
       done
-      if have go; then
-        info "Installing httpx via go install..."
-        if GO111MODULE=on go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest >/dev/null 2>&1 \
+      # ProjectDiscovery's tools have no distro package; go install is the
+      # supported route. subfinder is the important one — it is the primary
+      # passive subdomain source and was previously not installed here at all.
+      go_install() {
+        local name="$1" pkg="$2"
+        info "Installing $name via go install..."
+        if GO111MODULE=on go install -v "$pkg" >/dev/null 2>&1 \
            && mkdir -p "$HOME/.local/bin" \
-           && ln -sf "$HOME/go/bin/httpx" "$HOME/.local/bin/httpx"; then
-          ok "  httpx"
+           && ln -sf "$HOME/go/bin/$name" "$HOME/.local/bin/$name"; then
+          ok "  $name"
         else
-          warn "  httpx via go failed (optional)"
+          warn "  $name via go failed (optional)"
         fi
+      }
+      if have go; then
+        go_install httpx    "github.com/projectdiscovery/httpx/cmd/httpx@latest"
+        go_install subfinder "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
       else
-        warn "httpx skipped (needs Go) — the website http_probe step will be skipped."
+        warn "httpx and subfinder skipped (need Go) — passive subdomain discovery falls back to crt.sh, CertSpotter, HackerTarget and the Wayback index."
       fi
     elif have dnf; then
-      warn "Fedora/RHEL: run 'dnf install bind-utils whois nmap gobuster torsocks exiftool seclists' manually, then re-run."
+      warn "Fedora/RHEL: run 'dnf install bind-utils whois torsocks exiftool seclists' manually, then re-run."
     elif have pacman; then
-      warn "Arch: run 'pacman -S bind whois nmap gobuster torsocks exiftool seclists' manually, then re-run."
+      warn "Arch: run 'pacman -S bind whois torsocks exiftool seclists' manually, then re-run."
     else
       warn "No supported package manager found — install system tools manually, then re-run."
     fi
@@ -147,20 +155,42 @@ else
 
   # Correct PyPI names. sherlock's package is 'sherlock-project'; the rest match
   # the console-script name Spyglass detects on the PATH.
+  #
+  # Installed one at a time on purpose: these are optional engines, and every
+  # module degrades gracefully when its tool is missing, so a single failure must
+  # not abort the run. `--no-deps` is NOT used here — the engines need their own
+  # trees — but a partial failure is expected and only warns.
+  #
+  # cryptography is in this list because store.py falls back to plaintext on disk
+  # without it, and that fallback should not be what a user gets by default.
   PIP_PKGS=(
     "rich>=13.0.0"
     "phonenumbers>=8.13.0"
+    "cryptography>=42.0.0"
     "shodan"
     "holehe"
     "sherlock-project"
     "maigret"
     "user-scanner"
-    "ignorant>=2.0"
+    # 1.2 is the newest release and the last that ships the `ignorant` console
+    # script phone.py invokes. This read >=2.0, which no published version
+    # satisfies, so it has been failing quietly and the phone module has been
+    # running without its footprint source.
+    "ignorant>=1.2"
   )
   for p in "${PIP_PKGS[@]}"; do
     info "pip install $p"
     if "$PY" -m pip install -q "$p"; then ok "  $p"; else warn "  $p FAILED — the related module will degrade gracefully."; fi
   done
+
+  # Register the checkout itself. --no-deps because every core dependency is
+  # already handled above with per-package error handling, and letting pip
+  # re-resolve them would turn one unavailable engine into a failed install.
+  if "$PY" -m pip install -q --no-deps -e "$REPO_DIR"; then
+    ok "  spyglass (editable, from $REPO_DIR)"
+  else
+    warn "  could not install the package itself — use 'python -m $PKG_NAME' from $REPO_DIR"
+  fi
 fi
 
 # ── 5. blackbird (username/email module) ──────────────────
@@ -208,7 +238,13 @@ cat > "$LAUNCHER" <<EOF
 #!/usr/bin/env bash
 # Generated by Spyglass setup.sh — re-run setup.sh to regenerate.
 export PATH="$VENV/bin:\$PATH"
-cd "$REPO_PARENT" || exit 1
+# Prefer the installed console script. Fall back to \`python -m\` from the
+# checkout root, which is where the spyglass/ package lives, if the editable
+# install did not take.
+if [[ -x "$VENV/bin/spyglass" ]]; then
+  exec "$VENV/bin/spyglass" "\$@"
+fi
+cd "$REPO_DIR" || exit 1
 exec "$VENV/bin/python" -m "$PKG_NAME" "\$@"
 EOF
 chmod +x "$LAUNCHER"
@@ -230,7 +266,7 @@ venv_bin() { [[ -x "$VENV/bin/$1" ]]; }
 found_or_missing() {
   if have "$1" || venv_bin "$1"; then ok "  $1"; else warn "  $1 — missing"; fi
 }
-for t in dig curl whois nmap gobuster torsocks exiftool httpx phoneinfoga; do
+for t in dig curl whois torsocks exiftool httpx subfinder phoneinfoga; do
   found_or_missing "$t"
 done
 for t in shodan holehe sherlock maigret user-scanner ignorant; do
@@ -249,4 +285,4 @@ echo "  spyglass --help"
 echo "  spyglass website example.com --report"
 echo
 info "Or without the launcher:"
-echo "  cd $REPO_PARENT && $VENV/bin/python -m $PKG_NAME --help"
+echo "  cd $REPO_DIR && $VENV/bin/python -m $PKG_NAME --help"

@@ -479,7 +479,14 @@ def check(components, key=None, cap=4, per_product=10):
     components are ordered ahead of front-end libraries because they are the ones
     an attacker can actually reach first. Returns a result dict with a
     ``status`` of ok, unavailable or error.
+
+    An explicit ``key`` wins; otherwise ``NVD_API_KEY`` is read from the
+    environment, which is what lifts the anonymous rate limit from 5 requests per
+    30 seconds to 50. Passing the key as a parameter used to be the only way to
+    supply it, so the documented environment variable silently did nothing on the
+    CLI — only the web console happened to wire it up.
     """
+    key = key or os.environ.get("NVD_API_KEY") or None
     queryable = [c for c in components if c.get("product") in _CPE_VENDORS
                  and c.get("version")]
     if not queryable:

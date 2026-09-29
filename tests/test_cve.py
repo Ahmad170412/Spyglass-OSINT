@@ -1,5 +1,6 @@
 """Tests for cve.py's detection, version logic and NVD parsing (no network)."""
 
+import os
 import unittest
 from unittest import mock
 
@@ -315,6 +316,52 @@ class ParseNvdFilteringTest(unittest.TestCase):
                           "cpe:2.3:a:igor_sysoev:nginx:1.31.3"])
         for cpe in cve._cpes_for("nginx", "1.31.3"):
             self.assertNotIn(":*:*:*", cpe)
+
+
+class NvdApiKeyTest(unittest.TestCase):
+    """``NVD_API_KEY`` lifts the rate limit, and the docs promise it works.
+
+    It used to be reachable only as a ``key`` argument, and the CLI never
+    supplied one — only the web console wired up the environment variable. So on
+    the command line the documented variable silently did nothing and every
+    lookup ran at the anonymous 5-per-30s ceiling.
+    """
+
+    def _check_with_env(self, env_value, **kwargs):
+        seen = []
+
+        def _fake(params, key=None, timeout=45, retries=2):
+            seen.append(key)
+            return {"vulnerabilities": []}
+
+        env = {} if env_value is None else {"NVD_API_KEY": env_value}
+        with mock.patch.dict(os.environ, env, clear=True), \
+             mock.patch.object(cve, "_nvd_get", side_effect=_fake):
+            r = cve.check([{"product": "nginx", "version": "1.13.2"}], cap=1, **kwargs)
+        return r, seen
+
+    def test_env_var_supplies_the_key(self):
+        r, seen = self._check_with_env("env-key")
+        self.assertIn("env-key", seen)
+        self.assertTrue(r["keyed"])
+
+    def test_explicit_key_wins_over_env(self):
+        _, seen = self._check_with_env("env-key", key="flag-key")
+        self.assertIn("flag-key", seen)
+        self.assertNotIn("env-key", seen)
+
+    def test_unset_env_leaves_it_keyless(self):
+        r, seen = self._check_with_env(None)
+        # nginx resolves to two vendor spellings, so more than one query is made.
+        self.assertTrue(seen)
+        self.assertEqual(set(seen), {None})
+        self.assertFalse(r["keyed"])
+
+    def test_empty_env_string_is_not_treated_as_a_key(self):
+        r, seen = self._check_with_env("")
+        self.assertTrue(seen)
+        self.assertEqual(set(seen), {None})
+        self.assertFalse(r["keyed"])
 
 
 if __name__ == "__main__":
