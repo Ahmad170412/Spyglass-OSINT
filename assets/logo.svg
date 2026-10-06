@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80" width="320" height="80" role="img" aria-label="Spyglass OSINT">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#08080a"/>
+      <stop offset="100%" style="stop-color:#1c1c22"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ff2b2b"/>
+      <stop offset="100%" style="stop-color:#ff8a5c"/>
+    </linearGradient>
+    <linearGradient id="rule" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#ff2b2b;stop-opacity:0.9"/>
+      <stop offset="100%" style="stop-color:#ff8a5c;stop-opacity:0.15"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background pill -->
+  <rect width="320" height="80" rx="14" fill="url(#bg)"/>
+  <rect x="0.5" y="0.5" width="319" height="79" rx="13.5" fill="none" stroke="#2a2a32" stroke-width="1"/>
+
+  <!-- ICON: a spyglass — lens with crosshair, handle, two resolved targets -->
+  <g transform="translate(13, 20)">
+    <line x1="23" y1="27" x2="29" y2="37" stroke="url(#accent)" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="18" cy="16" r="13" fill="#170a0a" stroke="url(#accent)" stroke-width="3"/>
+    <circle cx="18" cy="16" r="6" fill="url(#accent)" opacity="0.3"/>
+    <line x1="18" y1="6"  x2="18" y2="10" stroke="#ff9a9a" stroke-width="2" stroke-linecap="round"/>
+    <line x1="18" y1="22" x2="18" y2="26" stroke="#ff9a9a" stroke-width="2" stroke-linecap="round"/>
+    <line x1="8"  y1="16" x2="12" y2="16" stroke="#ff9a9a" stroke-width="2" stroke-linecap="round"/>
+    <line x1="24" y1="16" x2="28" y2="16" stroke="#ff9a9a" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="33" cy="5" r="2.5" fill="#ff6b6b"/>
+    <circle cx="37" cy="12" r="1.8" fill="#ffb86b"/>
+  </g>
+
+  <!-- Acronym -->
+  <text x="48" y="37"
+        font-family="'Segoe UI', system-ui, -apple-system, sans-serif"
+        font-weight="700" font-size="23"
+        fill="url(#accent)" letter-spacing="1.5">SPY</text>
+
+  <!-- Divider -->
+  <line x1="48" y1="45" x2="308" y2="45" stroke="url(#rule)" stroke-width="1"/>
+
+  <!-- Exact repo slug -->
+  <text x="48" y="59"
+        font-family="'Segoe UI', system-ui, -apple-system, sans-serif"
+        font-size="10.5" fill="#94a3b8" letter-spacing="0.6">Spyglass-OSINT</text>
+
+  <!-- Tech chips -->
+  <rect x="176" y="49" width="50" height="14" rx="7" fill="#1e3a5f"/>
+  <text x="201" y="59" font-family="system-ui, -apple-system, sans-serif"
+        font-size="8" fill="#38bdf8" text-anchor="middle">Python</text>
+
+  <rect x="230" y="49" width="32" height="14" rx="7" fill="#0c2340"/>
+  <text x="246" y="59" font-family="system-ui, -apple-system, sans-serif"
+        font-size="8" fill="#818cf8" text-anchor="middle">CLI</text>
+
+  <rect x="266" y="49" width="42" height="14" rx="7" fill="#3a1416"/>
+  <text x="287" y="59" font-family="system-ui, -apple-system, sans-serif"
+        font-size="8" fill="#ff8a8a" text-anchor="middle">OSINT</text>
+</svg>

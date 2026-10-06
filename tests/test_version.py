@@ -21,10 +21,6 @@ pkg = imp("")
 # its own name rather than assuming.
 _PKG_NAME = pkg.__name__.split(".")[0]
 
-# The package directory itself. ``helpers._ROOT`` is its *parent*, which is why
-# looking for CHANGELOG.md there silently skipped the test.
-_PKG_DIR = os.path.dirname(os.path.abspath(pkg.__file__))
-
 
 def _run_cli(*args):
     return subprocess.run(
@@ -56,7 +52,10 @@ class VersionTest(unittest.TestCase):
 
     def test_changelog_documents_the_current_version(self):
         """A version bump without a changelog entry is how the 1.1.1 gap opened."""
-        changelog = os.path.join(_PKG_DIR, "CHANGELOG.md")
+        # _ROOT, not the package directory: CHANGELOG.md sits at the repository
+        # root, and looking inside spyglass/ made this test skip on every run —
+        # the guard silently guarding nothing.
+        changelog = os.path.join(_ROOT, "CHANGELOG.md")
         if not os.path.isfile(changelog):
             self.skipTest("CHANGELOG.md not found")
         with open(changelog, encoding="utf-8") as fh:

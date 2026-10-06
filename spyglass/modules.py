@@ -13,6 +13,19 @@ Every entry here maps to a real callable:
 Adding a tab means adding a row here and a route in webapp.py. Nothing else.
 """
 
+import os
+
+
+def _example_path(name):
+    """A placeholder file path written in this OS's own syntax.
+
+    The console renders ``ph`` verbatim, and ``/path/to/file.jpg`` reads as
+    nonsense to anyone on Windows. Joining onto the real home directory gives
+    an example that carries the platform's separator and drive letter, so the
+    field looks like something you could actually paste into.
+    """
+    return os.path.join(os.path.expanduser("~"), name)
+
 
 # `endpoint` is the Flask route suffix under /api/; `fields` describes the input
 # surface the page should render.
@@ -63,7 +76,7 @@ MODULES = [
         "endpoint": "metadata",
         "sub": "Supply a server-side file path to extract EXIF, XMP and document metadata.",
         "fields": [{"name": "target", "label": "File Path", "icon": "meta",
-                    "ph": "/path/to/file.jpg"}],
+                    "ph": _example_path("photo.jpg")}],
     },
     {
         "id": "darkweb", "ix": "07", "name": "Dark Web", "icon": "moon",

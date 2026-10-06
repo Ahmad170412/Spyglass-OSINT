@@ -84,10 +84,12 @@ class PackagingTest(unittest.TestCase):
         self.assertIn('packages = ["spyglass"]', _read("pyproject.toml"))
 
     def test_distribution_and_import_names_differ_deliberately(self):
-        # `spyglass-osint` is the PyPI name; `spyglass` is the import package.
-        # They are allowed to differ (pillow/PIL, beautifulsoup4/bs4) and here
-        # they must: the PyPI name carries the -osint suffix the import name
-        # does not need. Asserted so a rename of one is a conscious act.
+        # `spyglass-osint` is the distribution name; `spyglass` is the import
+        # package. They are allowed to differ (pillow/PIL, beautifulsoup4/bs4)
+        # and here they must: the distribution name carries the -osint suffix
+        # the import name does not need. Asserted so a rename of one is a
+        # conscious act. The project ships from GitHub only — the name exists
+        # for `pip install <path>` and metadata, not for an index.
         pyproject = _read("pyproject.toml")
         self.assertIn('name = "spyglass-osint"', pyproject)
         self.assertEqual(pkg.__name__.split(".")[0], "spyglass")

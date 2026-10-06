@@ -1,0 +1,41 @@
+# The suite is the release gate, so it runs on every push and PR rather than
+# only when someone remembers to. 3.9 is the floor pyproject declares and the
+# only one CI can actually prove — the maintainer's machine has 3.11 and 3.13 —
+# and 3.11 sits between them so a 3.10-era regression shows up as its own job.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # Core plus [web] is a complete environment for the suite: test_cli_args
+      # imports spyglass.webapp, which imports flask. The recon engines and
+      # document parsers are deliberately absent — every test that would need
+      # one exercises the degrade-instead path, which is the behaviour worth
+      # covering.
+      - name: Install
+        run: python -m pip install -e ".[web]"
+
+      - name: Run suite
+        run: python -m unittest discover -s tests -t tests

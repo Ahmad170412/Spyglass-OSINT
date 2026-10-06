@@ -1,6 +1,8 @@
 """Tests for store.py — the SQLite case store (isolated via SPYGLASS_HOME)."""
 
+import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from unittest import mock
@@ -8,6 +10,20 @@ from unittest import mock
 from helpers import imp
 
 store = imp("store")
+display = imp("display")
+
+
+def _silence_store_chatter(test):
+    """Mute the encryption-status line store_result prints on every write.
+
+    It is a real operator-facing message, so the tests that *assert* on it
+    patch these themselves; everything else only needs it to stay off the
+    console while the suite runs.
+    """
+    for name in ("info", "warn"):
+        patcher = mock.patch.object(display, name)
+        patcher.start()
+        test.addCleanup(patcher.stop)
 
 
 def _website_result(ips, subs):
@@ -25,6 +41,7 @@ class StoreTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.addCleanup(self.tmp.cleanup)
+        _silence_store_chatter(self)
 
     def test_store_and_list(self):
         store.store_result(_website_result(["1.2.3.4"], ["www.x.com"]), "website", "x.com")
@@ -278,6 +295,7 @@ class EntityDiffBehaviourTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.addCleanup(self.tmp.cleanup)
+        _silence_store_chatter(self)
 
     def test_phone_runs_are_now_diffable(self):
         store.store_result(_phone_result(["instagram.com", "facebook.com"]),
@@ -315,6 +333,114 @@ class EntityDiffBehaviourTest(unittest.TestCase):
         d = store.diff("evidence.jpg", "metadata")
         self.assertIn("hash:bbbb", d["added"])
         self.assertIn("hash:aaaa", d["removed"])
+
+
+class StoreEncryptionTest(unittest.TestCase):
+    """Encryption at rest.
+
+    The key derivation used a fixed salt, so two operators sharing a password
+    derived the same key and the salt was worth nothing. Each row now carries
+    its own random salt, and rows written before that change must still open.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        patcher = mock.patch.dict(os.environ, {"SPYGLASS_HOME": self.tmp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+        os.environ.pop("SPYGLASS_STORE_KEY", None)
+        os.environ.pop("SPYGLASS_STORE_PASS", None)
+        # Each test asserts on the first plaintext warning, so the once-per-
+        # process latch has to start clear and be handed back as it was found.
+        self._latched = store._plaintext_warned
+        store._plaintext_warned = False
+        self.addCleanup(setattr, store, "_plaintext_warned", self._latched)
+        _silence_store_chatter(self)
+
+    def _raw_results(self):
+        """The ``result_json`` column exactly as it sits on disk."""
+        con = sqlite3.connect(store._db_path())
+        try:
+            rows = con.execute("SELECT result_json FROM runs ORDER BY id").fetchall()
+        finally:
+            con.close()
+        return [r[0] for r in rows]
+
+    def test_password_row_is_not_plaintext_on_disk(self):
+        os.environ["SPYGLASS_STORE_PASS"] = "correct horse"
+        store.store_result({"domain": "secret.example"}, "website", "example.com")
+        raw = self._raw_results()[0]
+        self.assertNotIn("secret.example", raw)
+        self.assertTrue(raw.startswith(f"{store._STORE_PREFIX}:"))
+
+    def test_each_row_derives_its_own_salt(self):
+        os.environ["SPYGLASS_STORE_PASS"] = "correct horse"
+        for _ in range(2):
+            store.store_result({"domain": "example.com"}, "website", "example.com")
+        first, second = self._raw_results()
+        self.assertNotEqual(first, second)
+        salt_a = first.split(":", 2)[1]
+        salt_b = second.split(":", 2)[1]
+        self.assertNotEqual(salt_a, salt_b)
+        # A salt that is really random, not a counter or a hash of the row.
+        self.assertEqual(len(store.base64.urlsafe_b64decode(salt_a.encode())),
+                         store._SALT_BYTES)
+
+    def test_password_rows_round_trip_through_export(self):
+        os.environ["SPYGLASS_STORE_PASS"] = "correct horse"
+        store.store_result({"domain": "example.com"}, "website", "example.com")
+        profile = store.export_profile("example.com")
+        self.assertEqual(profile["results"]["website"], {"domain": "example.com"})
+
+    def test_rows_written_with_the_fixed_salt_still_open(self):
+        """Backwards compatibility is the whole reason _LEGACY_SALT survives."""
+        from cryptography.fernet import Fernet
+        os.environ["SPYGLASS_STORE_PASS"] = "correct horse"
+        legacy = Fernet(store._derive("correct horse", store._LEGACY_SALT))
+        payload = legacy.encrypt(json.dumps({"domain": "old.example"}).encode()).decode()
+
+        db = store._connect()
+        try:
+            store._init(db)
+            db.execute(
+                "INSERT INTO runs (target, qtype, run_at, result_json) "
+                "VALUES (?, ?, ?, ?)",
+                ("old.example", "website", "2026-01-01T00:00:00", payload),
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        profile = store.export_profile("old.example")
+        self.assertEqual(profile["results"]["website"], {"domain": "old.example"})
+
+    def test_raw_key_rows_round_trip(self):
+        from cryptography.fernet import Fernet
+        os.environ["SPYGLASS_STORE_KEY"] = Fernet.generate_key().decode()
+        store.store_result({"domain": "example.com"}, "website", "example.com")
+        raw = self._raw_results()[0]
+        # A raw key needs no KDF, so there is no salt to wrap it with.
+        self.assertFalse(raw.startswith(f"{store._STORE_PREFIX}:"))
+        self.assertNotIn("example.com", raw)
+        profile = store.export_profile("example.com")
+        self.assertEqual(profile["results"]["website"], {"domain": "example.com"})
+
+    def test_no_key_means_plaintext_and_a_warning(self):
+        with mock.patch.object(display, "warn") as warn, \
+             mock.patch.object(display, "info"):
+            store.store_result({"domain": "example.com"}, "website", "example.com")
+        self.assertEqual(self._raw_results()[0],
+                         json.dumps({"domain": "example.com"}))
+        self.assertEqual(warn.call_count, 1)
+        self.assertIn("PLAINTEXT", warn.call_args[0][0])
+
+    def test_the_plaintext_warning_is_not_repeated_for_every_run(self):
+        with mock.patch.object(display, "warn") as warn, \
+             mock.patch.object(display, "info"):
+            store.store_result({"domain": "example.com"}, "website", "example.com")
+            store.store_result({"domain": "example.com"}, "website", "example.com")
+        self.assertEqual(warn.call_count, 1)
 
 
 if __name__ == "__main__":

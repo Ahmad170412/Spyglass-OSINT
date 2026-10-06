@@ -1,8 +1,9 @@
 """Shared import helper for the test suite.
 
 Spyglass is now a properly-named package (``spyglass/``) with a real
-distribution on PyPI, so the importlib indirection this file used to need is
-mostly historical. It is kept because two things still depend on it:
+distribution name (``spyglass-osint``), so the importlib indirection this file
+used to need is mostly historical. It is kept because two things still depend
+on it:
 
 * ``tests/`` is deliberately *not* part of the installed distribution, so the
   suite has to put the repository root on ``sys.path`` itself rather than

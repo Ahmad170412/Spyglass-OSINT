@@ -1,11 +1,13 @@
 # The authoritative dependency set lives in pyproject.toml:
 #
-#     pip install spyglass-osint            # core CLI only
-#     pip install "spyglass-osint[all]"     # + recon engines, web console, metadata
+#     pip install -e .                 # core CLI only
+#     pip install -e ".[all]"          # + recon engines, web console, metadata
 #
-# This file is kept so the `pip install -r requirements.txt` form in older
-# instructions still resolves, and it installs the local checkout with every
-# extra so the source tree is runnable exactly as the PyPI package would be.
+# There is no PyPI package; the project is distributed from GitHub only, and
+# the form above is the supported install. This file exists so the shorter
+# `pip install -r requirements.txt` still resolves from the repo root, and it
+# installs the local checkout with every extra so the source tree is runnable
+# exactly as an installed copy would be.
 #
 # Note on `shodan`: it is deliberately absent. website.py shells out to the
 # Shodan *command-line client* (subprocess, _phase_shodan_ports), it never

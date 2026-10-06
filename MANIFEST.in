@@ -6,7 +6,12 @@
 include LICENSE
 include README.md
 include CHANGELOG.md
+include SECURITY.md
 include requirements.txt
+
+# README.md references assets/logo.svg, so the sdist carries it too — otherwise
+# the long description renders a broken image anywhere the tarball is unpacked.
+recursive-include assets *.svg
 
 # setup.sh installs the external recon tools (brew/apt) and the venv, and
 # `pip install -e .` on its own does not set those up. Excluding it made an

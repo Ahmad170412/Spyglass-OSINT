@@ -2,6 +2,7 @@
 
 import json
 import os
+import tempfile
 import unittest
 from unittest import mock
 
@@ -278,13 +279,19 @@ class DarkwebReportExportTest(unittest.TestCase):
     def test_export_json_roundtrip(self):
         import json
         exp = imp("export")
-        path = exp.json_output(self.RESULT, "user@example.com", "darkweb")
-        try:
-            with open(path) as f:
-                data = json.load(f)
+        # json_output writes to the working directory and announces the path it
+        # chose; chdir so a failure cannot leave spyglass_*.json in the repo
+        # root, and mute the announcement so it does not look like a leak.
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(exp._ui, "info"):
+            old = os.getcwd()
+            os.chdir(tmp)
+            try:
+                path = exp.json_output(self.RESULT, "user@example.com", "darkweb")
+                with open(path) as f:
+                    data = json.load(f)
+            finally:
+                os.chdir(old)
             self.assertEqual(data["ahmia"][0]["url"], "http://abc.onion")
-        finally:
-            os.unlink(path)
 
 
 if __name__ == "__main__":

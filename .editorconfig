@@ -1,0 +1,31 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.py]
+indent_size = 4
+
+[*.{html,css,js,json}]
+indent_size = 2
+
+# pyproject.toml indents array entries four deep; setup.sh and any future
+# workflow file use two.
+[*.{yml,yaml,sh}]
+indent_size = 2
+
+[*.toml]
+indent_size = 4
+
+# Trailing double-space is a hard line break in Markdown, and a trailing
+# space is how a task list is marked. Leave both alone.
+[*.md]
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab

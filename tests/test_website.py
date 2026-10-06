@@ -134,13 +134,6 @@ class SpfTest(unittest.TestCase):
         self.assertIn("_spf.google.com", inc)
 
 
-class ExposureChecksTest(unittest.TestCase):
-    def test_paths_are_well_formed(self):
-        for path in web._EXPOSURE_PATHS:
-            self.assertTrue(path.startswith("/"))
-            self.assertNotIn(" ", path)
-
-
 class CertSpotterTest(unittest.TestCase):
     def test_filters_to_target_domain(self):
         data = [{"dns_names": ["example.com", "www.example.com",
@@ -215,6 +208,11 @@ class FaviconTest(unittest.TestCase):
 
 
 class ExposureChecksTest(unittest.TestCase):
+    def test_paths_are_well_formed(self):
+        for path in web._EXPOSURE_PATHS:
+            self.assertTrue(path.startswith("/"))
+            self.assertNotIn(" ", path)
+
     def test_status_filter_no_redirect_false_positives(self):
         base = "https://x.com"
         codes = {

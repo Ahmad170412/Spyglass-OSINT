@@ -16,8 +16,11 @@ target data to disk; the location is configurable via ``SPYGLASS_HOME``
 
 Data at rest is encrypted with Fernet (AES-128-GCM). The key is derived from
 ``SPYGLASS_STORE_KEY`` (base64-encoded 32-byte key) or from ``SPYGLASS_STORE_PASS``
-(via PBKDF2 with 100k iterations). If neither is set, a warning is printed and
-data is stored in plaintext (backwards compatible).
+(via PBKDF2 with 100k iterations and a fresh random salt per row, stored with
+the ciphertext so each row re-derives its own key). Rows written before the
+random-salt change are still readable — they carry no ``sg1:`` prefix and are
+opened with the legacy fixed salt. If neither variable is set, the first write
+in each run warns that the store is plaintext, and the data stays plaintext.
 
 Note that the ``entities`` table is not covered by that encryption: it holds
 domain, IP and email values in plaintext regardless of the key.
@@ -46,6 +49,16 @@ except Exception:
 
 _SCHEMA_VERSION = 1
 
+# Prefix for a row whose key was derived with a per-row random salt. The salt
+# travels with the ciphertext because it is not secret; the point is only that
+# two operators using the same password do not derive the same key.
+_STORE_PREFIX = "sg1"
+_SALT_BYTES = 16
+_PBKDF2_ITERATIONS = 100000
+# Salt used by rows written before per-row salts existed. Read-only: opening a
+# legacy row must keep working, but nothing new is ever written with it.
+_LEGACY_SALT = b"spyglass-salt"
+
 
 def _db_path():
     home = os.environ.get("SPYGLASS_HOME") or os.path.expanduser("~/.spyglass")
@@ -53,38 +66,77 @@ def _db_path():
     return os.path.join(home, "spyglass.db")
 
 
-def _get_fernet():
-    """Get Fernet instance for encryption. Returns None if crypto unavailable or no key set."""
+def _derive(password: str, salt: bytes) -> bytes:
+    """PBKDF2-SHA256 → urlsafe-b64 32-byte key, in the shape Fernet expects."""
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt,
+                     iterations=_PBKDF2_ITERATIONS)
+    return base64.urlsafe_b64encode(kdf.derive(password.encode()))
+
+
+def _raw_key_fernet():
+    """Fernet for ``SPYGLASS_STORE_KEY`` — a ready-made key, so no KDF, no salt.
+
+    Returns None when the variable is unset or is not a valid Fernet key.
+    """
     if not _CRYPTO_AVAILABLE:
         return None
     key_b64 = os.environ.get("SPYGLASS_STORE_KEY")
-    if key_b64:
-        try:
-            return Fernet(key_b64.encode())
-        except Exception:
-            pass
-    password = os.environ.get("SPYGLASS_STORE_PASS")
-    if password:
-        salt = b"spyglass-salt"  # Fixed salt for deterministic key derivation
-        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=100000)
-        key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
-        return Fernet(key)
-    return None
+    if not key_b64:
+        return None
+    try:
+        return Fernet(key_b64.encode())
+    except Exception:
+        return None
+
+
+def _keyed() -> bool:
+    """True when a key or a password is configured and crypto is importable."""
+    if not _CRYPTO_AVAILABLE:
+        return False
+    return bool(os.environ.get("SPYGLASS_STORE_KEY")
+                or os.environ.get("SPYGLASS_STORE_PASS"))
 
 
 def _encrypt(data: str) -> str:
-    """Encrypt string data. Returns base64-encoded ciphertext or plaintext if no key."""
-    f = _get_fernet()
-    if not f:
-        return data
-    return f.encrypt(data.encode()).decode()
+    """Encrypt string data. Returns ciphertext (wrapped with its salt when a
+    password is in use) or the plaintext unchanged when no key is configured."""
+    f = _raw_key_fernet()
+    if f is not None:
+        return f.encrypt(data.encode()).decode()
+    password = os.environ.get("SPYGLASS_STORE_PASS")
+    if password and _CRYPTO_AVAILABLE:
+        salt = os.urandom(_SALT_BYTES)
+        f = Fernet(_derive(password, salt))
+        salt_b64 = base64.urlsafe_b64encode(salt).decode()
+        return f"{_STORE_PREFIX}:{salt_b64}:{f.encrypt(data.encode()).decode()}"
+    return data
 
 
 def _decrypt(data: str) -> str:
-    """Decrypt string data. Returns plaintext or original if decryption fails."""
-    f = _get_fernet()
-    if not f:
+    """Decrypt string data. Returns plaintext, or the input unchanged when it
+    cannot be opened — which is also how a plaintext row is recognised."""
+    if not _CRYPTO_AVAILABLE or not data:
         return data
+    if data.startswith(f"{_STORE_PREFIX}:"):
+        # Per-row salt: split into prefix, salt, token. A raw Fernet token
+        # cannot be mistaken for this — the base64url alphabet has no colon.
+        try:
+            _prefix, salt_b64, token = data.split(":", 2)
+            password = os.environ.get("SPYGLASS_STORE_PASS")
+            if not password:
+                return data
+            salt = base64.urlsafe_b64decode(salt_b64.encode())
+            return Fernet(_derive(password, salt)).decrypt(token.encode()).decode()
+        except Exception:
+            return data
+    # Legacy shape: a bare Fernet token (raw key, or the fixed legacy salt) or
+    # plaintext written before any key was set.
+    f = _raw_key_fernet()
+    if f is None:
+        password = os.environ.get("SPYGLASS_STORE_PASS")
+        if not password:
+            return data
+        f = Fernet(_derive(password, _LEGACY_SALT))
     try:
         return f.decrypt(data.encode()).decode()
     except Exception:
@@ -520,10 +572,29 @@ def _entities(result, qtype):
 
 # ─── write / read ─────────────────────────────────────────
 
+_plaintext_warned = False
+
+
+def _announce_encryption(ui):
+    """Say whether this run landed encrypted, once per process for the
+    plaintext case: an interactive session storing ten runs should not print
+    the same warning ten times, but it must never be silent on the first one."""
+    global _plaintext_warned
+    if _keyed():
+        ui.info("Stored with encryption (SPYGLASS_STORE_KEY or SPYGLASS_STORE_PASS set)")
+        return
+    if _plaintext_warned:
+        return
+    _plaintext_warned = True
+    ui.warn("Stored in PLAINTEXT — set SPYGLASS_STORE_KEY or SPYGLASS_STORE_PASS "
+            "to encrypt the case store at rest.")
+
+
 def store_result(result, qtype, target):
     """Persist one result snapshot + its entities. Returns the run id or None."""
     if not result or not target:
         return None
+    from . import display as ui
     db = _connect()
     try:
         _init(db)
@@ -541,14 +612,12 @@ def store_result(result, qtype, target):
                 (run_id, kind, value),
             )
         db.commit()
-        if _get_fernet():
-            from . import display as ui
-            ui.info("Stored with encryption (SPYGLASS_STORE_KEY or SPYGLASS_STORE_PASS set)")
-        return run_id
     except Exception:
         return None
     finally:
         db.close()
+    _announce_encryption(ui)
+    return run_id
 
 
 def _latest_runs(db, target, qtype, limit):

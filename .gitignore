@@ -31,3 +31,6 @@ env/
 .idea/
 *.sublime-project
 *.sublime-workspace
+
+# Agent / browser tooling scratch
+.playwright-mcp/

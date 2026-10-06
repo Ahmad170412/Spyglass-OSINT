@@ -1,6 +1,6 @@
 import os
-import re
 import json
+import mimetypes
 import subprocess
 import hashlib
 from datetime import datetime
@@ -8,15 +8,39 @@ from datetime import datetime
 from .utils import _run, _check_tool, _EXIFTOOL
 
 
+def normalise_path(raw):
+    """Turn a pasted or typed path into one this OS can open.
+
+    Three front ends hand paths to this module — the one-shot CLI, the
+    interactive menu (which has no shell behind it, so ``~`` reaches us as a
+    literal tilde), and the web console, where paths arrive from a text box
+    carrying whatever the file manager put on the clipboard, quotes included.
+    Doing it once here means none of them has to know this platform's separator,
+    home-directory syntax or variable form.
+    """
+    p = str(raw or "").strip()
+    # Finder, Explorer and most file managers quote a path containing spaces.
+    if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'":
+        p = p[1:-1].strip()
+    # expandvars reads %VAR% on Windows and $VAR elsewhere; expanduser reads
+    # the platform's home syntax. Both are no-ops when there is nothing to expand.
+    return os.path.expandvars(os.path.expanduser(p))
+
+
 def extract(path):
     """Extract metadata from a file. Returns a structured dict."""
+    path = normalise_path(path)
+    if not path:
+        return {"error": "No file path given"}
     if not os.path.isfile(path):
         return {"error": f"File not found: {path}"}
 
     result = _file_info(path)
 
+    sniffed = None
     if _EXIFTOOL:
-        meta = _exiftool_extract(path)
+        meta, sniffed = _exiftool_extract(path)
+        result["file_type"] = _resolve_type(sniffed, result["file_type"])
         if meta:
             result.update(meta)
             return result
@@ -46,12 +70,34 @@ def _file_info(path):
         "file_name": os.path.basename(path),
         "file_size": _human_size(st.st_size),
         "file_type": _mime_type(path),
-        "created": datetime.fromtimestamp(st.st_birthtime).isoformat() if hasattr(st, "st_birthtime") else "N/A",
+        "created": _created(st),
         "modified": datetime.fromtimestamp(st.st_mtime).isoformat(),
         "accessed": datetime.fromtimestamp(st.st_atime).isoformat(),
         "md5": hashes["md5"],
         "sha256": hashes["sha256"],
     }
+
+
+# Read once rather than per call so the platform branch in `_created` is a
+# module constant a test can flip, instead of a patch on the global `os`.
+_IS_WINDOWS = os.name == "nt"
+
+
+def _created(st):
+    """Creation time, with an honest answer on every platform this runs on.
+
+    ``st_birthtime`` is macOS/BSD. Linux does not expose it at all, so there is
+    no creation time to report and ``N/A`` is the right value rather than a
+    silent fallback to the inode-change time, which is not the same fact. On
+    Windows ``st_ctime`` *is* the creation time (its change time is ``st_mtime``),
+    so it is used there instead of reporting nothing.
+    """
+    birth = getattr(st, "st_birthtime", None)
+    if birth is None and _IS_WINDOWS:
+        birth = st.st_ctime
+    if birth is None:
+        return "N/A"
+    return datetime.fromtimestamp(birth).isoformat()
 
 
 def _compute_hashes(path):
@@ -69,7 +115,15 @@ def _compute_hashes(path):
 
 
 def _exiftool_extract(path):
-    """Full metadata via exiftool — the gold standard."""
+    """Format metadata via exiftool — the gold standard for a format it knows.
+
+    Returns ``(fields, sniffed_mime)``. The MIME type is pulled out separately
+    rather than left in the fields: exiftool's own answer for the file's
+    *identity* still has to be reconciled with the extension table (see
+    ``_resolve_type``), and it must never be reported twice. ``(None, None)``
+    means the run failed, as distinct from ``(dict(), ...)`` which means it
+    succeeded and simply had nothing curated to show.
+    """
     try:
         r = subprocess.run(
             [_EXIFTOOL, "-j", "-G", path],
@@ -77,15 +131,27 @@ def _exiftool_extract(path):
         )
         data = json.loads(r.stdout.strip())
         if isinstance(data, list) and data:
-            return _clean_exiftool(data[0])
+            raw = data[0]
+            return _clean_exiftool(raw), _exiftool_mime(raw)
     except Exception:
         pass
-    return {}
+    return None, None
+
+
+def _exiftool_mime(raw):
+    for key, val in raw.items():
+        if key.rsplit(":", 1)[-1] == "MIMEType" and val:
+            return str(val).strip()
+    return None
 
 
 _CURATED = {
-    # File
-    "FileSize", "FileType", "FileTypeExtension", "MIMEType",
+    # File. Deliberately *not* FileSize / FileType / FileTypeExtension /
+    # MIMEType: `_file_info` already reports those four facts, from stat and
+    # from the extension, and keeping both copies is what put two contradictory
+    # "file type" rows on screen — a .py script came back as TXT from exiftool
+    # and application/octet-stream from us. `_resolve_type` folds exiftool's
+    # MIME into `file_type` where it adds something.
     "ImageWidth", "ImageHeight", "Megapixels", "Duration",
     # Image
     "Make", "Model", "Software", "Orientation", "XResolution", "YResolution",
@@ -249,13 +315,86 @@ def _human_size(b):
     return f"{b:.1f} TB"
 
 
+# Extension → MIME, consulted *before* the stdlib because `mimetypes` is filled
+# from the host OS — its registry on Windows, /etc/mime.types on Linux — so the
+# same file is typed differently depending on where Spyglass runs, and `.rs`
+# comes back as `application/rls-services+xml` there, which is an XML format
+# rather than Rust. Anything not named here defers to it, then to octet-stream.
+_MIME_BY_EXT = {
+    # images
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    ".gif": "image/gif", ".webp": "image/webp", ".tiff": "image/tiff",
+    ".tif": "image/tiff", ".bmp": "image/bmp", ".svg": "image/svg+xml",
+    # documents
+    ".pdf": "application/pdf",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    # audio / video
+    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4",
+    ".ogg": "audio/ogg", ".flac": "audio/flac",
+    ".mp4": "video/mp4", ".mov": "video/quicktime", ".mkv": "video/x-matroska",
+    # archives
+    ".zip": "application/zip", ".gz": "application/gzip",
+    ".tar": "application/x-tar", ".7z": "application/x-7z-compressed",
+    # source. The extensions exiftool most often has no format entry for, which
+    # is exactly how a Python script ends up typed TXT.
+    ".py": "text/x-python", ".pyw": "text/x-python", ".pyi": "text/x-python",
+    ".rb": "text/x-ruby", ".pl": "text/x-perl", ".php": "text/x-php",
+    ".js": "text/javascript", ".mjs": "text/javascript",
+    ".cjs": "text/javascript", ".ts": "text/x-typescript",
+    ".sh": "application/x-sh", ".bash": "application/x-sh",
+    ".zsh": "application/x-sh", ".fish": "application/x-sh",
+    ".c": "text/x-c", ".h": "text/x-c", ".cc": "text/x-c++",
+    ".cpp": "text/x-c++", ".hpp": "text/x-c++", ".cs": "text/x-csharp",
+    ".java": "text/x-java", ".kt": "text/x-kotlin", ".go": "text/x-go",
+    ".rs": "text/x-rust", ".swift": "text/x-swift", ".scala": "text/x-scala",
+    ".r": "text/x-r", ".lua": "text/x-lua", ".ps1": "text/x-powershell",
+    ".sql": "application/sql",
+    # data and markup
+    ".json": "application/json", ".xml": "application/xml",
+    ".yaml": "application/yaml", ".yml": "application/yaml",
+    ".toml": "application/toml", ".ini": "text/plain",
+    ".cfg": "text/plain", ".conf": "text/plain",
+    ".md": "text/markdown", ".rst": "text/x-rst", ".csv": "text/csv",
+    ".tsv": "text/tab-separated-values", ".log": "text/plain",
+    ".txt": "text/plain", ".html": "text/html", ".htm": "text/html",
+    ".css": "text/css",
+}
+
+
 def _mime_type(path):
+    """The file's MIME type, from the extension. Same answer on every OS."""
     ext = os.path.splitext(path)[1].lower()
-    return {
-        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
-        ".gif": "image/gif", ".webp": "image/webp", ".tiff": "image/tiff",
-        ".pdf": "application/pdf", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        ".mp3": "audio/mpeg", ".mp4": "video/mp4",
-    }.get(ext, "application/octet-stream")
+    if ext in _MIME_BY_EXT:
+        return _MIME_BY_EXT[ext]
+    return mimetypes.guess_type(path)[0] or "application/octet-stream"
+
+
+# What exiftool falls back to when it has no format registered for the
+# extension. It describes the *bytes*, not the file: a Python script, a README
+# and a shell script all sniff as text/plain.
+_GENERIC_MIMES = {"application/octet-stream", "text/plain"}
+
+
+def _resolve_type(sniffed, ours):
+    """One answer for "what kind of file is this".
+
+    Exiftool is exact for a format it has registered and blind for one it has
+    not: it knows `.sh` but not `.py`, so a Python script is sniffed as plain
+    text and reported TXT / txt / text/plain. The extension table is the
+    reverse — exact for the extensions it names, octet-stream for the rest.
+    Neither wins outright, so each is trusted only where it is informative:
+    exiftool's MIME when it recognised a real format, or when ours is the empty
+    answer; ours whenever ours names something specific.
+    """
+    if not sniffed or sniffed == ours:
+        return ours
+    if sniffed not in _GENERIC_MIMES:
+        return sniffed
+    if ours in _GENERIC_MIMES:
+        return sniffed
+    return ours

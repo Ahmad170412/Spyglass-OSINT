@@ -168,11 +168,15 @@ def api_metadata():
     target, err = _need(_body().get("target"), "file path")
     if err:
         return err
-    path = os.path.expanduser(target)
+    # normalise_path, not expanduser: a path pasted into this box arrives with
+    # this OS's separators and quotes around it if it contains spaces, and the
+    # console has to check the same string the module will open.
+    meta = _mod("metadata")
+    path = meta.normalise_path(target)
     if not os.path.isfile(path):
-        return jsonify({"error": f"File not found: {target}"}), 400
+        return jsonify({"error": f"File not found: {path}"}), 400
     try:
-        return jsonify(_mod("metadata").extract(path))
+        return jsonify(meta.extract(path))
     except Exception as exc:
         return _fail(exc)
 

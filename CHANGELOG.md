@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-05
+
 ### Added
 
 - **Three sources, closing the three gaps that mattered.** All keyless, all
@@ -68,11 +70,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identifier. `import Spyglass-OSINT` is a syntax error, so the only supported
   invocation was `python -m Spyglass-OSINT` from the *parent* of the checkout.
   That ruled out pip, pipx, CI, Docker, and use as a library by anything else.
-  - The distribution is **`spyglass-osint`** on PyPI and the import package is
-    **`spyglass/`**. The two names are deliberately different — the PyPI name
-    carries the `-osint` suffix the import name does not need, the same shape as
-    `beautifulsoup4`/`bs4`. The checkout directory name no longer has to match
-    anything.
+  - The distribution is **`spyglass-osint`** and the import package is
+    **`spyglass/`**. The two names are deliberately different — the distribution
+    name carries the `-osint` suffix the import name does not need, the same
+    shape as `beautifulsoup4`/`bs4`. The checkout directory name no longer has
+    to match anything. The project ships from GitHub only: there is no PyPI
+    package, so the supported install is `pip install -e .` from a checkout.
   - Three entry points, all verified against an installed wheel rather than the
     source tree: the `spyglass` console script, `python -m spyglass`, and
     `import spyglass`. The checkout can now be renamed freely.
@@ -586,3 +589,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: unified OSINT CLI with email, username, phone, website, IP, metadata, and
   OPSEC modules, Rich TUI, proxy routing, cross-module correlation, and JSON/CSV export.
+
+[Unreleased]: https://github.com/Ahmad170412/Spyglass-OSINT/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Ahmad170412/Spyglass-OSINT/compare/v1.1.1...v1.2.0
+[1.1.1]: https://github.com/Ahmad170412/Spyglass-OSINT/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/Ahmad170412/Spyglass-OSINT/compare/v0.1.0...v1.1.0
+[0.1.0]: https://github.com/Ahmad170412/Spyglass-OSINT/releases/tag/v0.1.0
